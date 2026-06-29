@@ -1,0 +1,257 @@
+{
+  "campaign_id": "sps-2026-06-29T17-38-02Z",
+  "authorized_by_user": true,
+  "authorized_at": "2026-06-29T17:40:07Z",
+  "permission_envelope": {
+    "num_agents": 3,
+    "modal_network_auth_upload_access": true,
+    "local_repo_snapshot_upload": true,
+    "local_rom_byte_upload_at_benchmark_runtime": true,
+    "local_state_byte_upload_at_benchmark_runtime": true,
+    "max_parallel_modal_runs": 3,
+    "max_total_modal_runs": 6,
+    "max_estimated_spend_usd": 10
+  },
+  "num_agents": 3,
+  "root_branch": "main",
+  "orchestration_branch": "codex/autoresearch-2026-06-29T17-38-02Z",
+  "created_from_sha": "c0d6f8fa69e65fc3175dacaefab4a01ab9184458",
+  "created_at": "2026-06-29T17:38:02Z",
+  "allowed_benchmark_skill": "/modal-benchmark",
+  "allowed_output_root": "artifacts/benchmarks/",
+  "max_parallel_modal_runs": 3,
+  "max_total_modal_runs": 6,
+  "max_estimated_spend_usd": 10,
+  "modal_runs_used": 4,
+  "modal_runs_reserved_for_reproduction": 1,
+  "integration_sha": "677e398aad148fe985290109454b551804dbcc09",
+  "current_baseline_artifact": "artifacts/benchmarks/p1-fused-cropped-gray-area-resize-repro-2026-06-29T1750Z.json",
+  "current_baseline_modal_run_url": "https://modal.com/apps/eng-tiago-silva/main/ap-njPVOggeRHVOb1qyq8XnTf",
+  "current_baseline_mean_env_steps_per_sec": 27060.19039183714,
+  "current_baseline_stdev_env_steps_per_sec": 672.3720619619744,
+  "current_baseline_best_env_steps_per_sec": 27975.602393226116,
+  "acceptance_threshold_mean_env_steps_per_sec": 29766.209431020856,
+  "baseline_samples": {
+    "Level1-1": {
+      "runs": [24393.450716381054, 24390.883895638684, 24383.834907949834],
+      "mean": 24389.389839989857,
+      "stdev": 4.978692421585718,
+      "best": 24393.450716381054
+    },
+    "Level1-2": {
+      "runs": [23584.997302554366, 23956.609308054458, 23822.074527223428],
+      "mean": 23787.893712610752,
+      "stdev": 188.0944223215337,
+      "best": 23956.609308054458
+    },
+    "Level1-3": {
+      "runs": [23904.46040741686, 23962.34627651831, 24119.53474752805],
+      "mean": 23995.447143821076,
+      "stdev": 111.30167957373666,
+      "best": 24119.53474752805
+    },
+    "Level1-4": {
+      "runs": [24414.691419709114, 24319.547221711072, 24185.59453522158],
+      "mean": 24306.555058213245,
+      "stdev": 115.06009701188595,
+      "best": 24414.691419709114
+    }
+  },
+  "baseline_modal_machine": {
+    "cpu_request": 16.0,
+    "memory_mb": 8192,
+    "os_cpu_count": 32,
+    "affinity_cpu_count": 32
+  },
+  "baseline_local_git": {
+    "commit": "c0d6f8fa69e65fc3175dacaefab4a01ab9184458",
+    "status_short": "M .codex/skills/autoresearch-speed/SKILL.md"
+  },
+  "proposals": [
+    {
+      "proposal_id": "p2-synced-obs-broadcast-copy",
+      "source_worker": "019f1477-08d2-74a2-a04d-fc905187f990",
+      "hypothesis": "Replace the synced-lane fast-path observation copy with a benchmark-shaped materialized broadcast copy while preserving contiguous (16,4,84,84) uint8 output for every lane.",
+      "expected_bottleneck": "src/vec_env.rs synced path serially copies lane 0's full 4x84x84 stack into lanes 1..15 after stepping only lane 0 for uniform actions.",
+      "expected_gain_pct": 12.0,
+      "expected_gain_range_pct": [12.0, 25.0],
+      "confidence": 0.4,
+      "estimated_wall_clock_minutes": 75,
+      "review_risk_penalty": 15,
+      "modal_wait_penalty": 10,
+      "priority_score": 0.048,
+      "files_likely_to_change": ["src/vec_env.rs", "docs/PERFORMANCE_PLAN.md"],
+      "correctness_risks": [
+        "partial or stale observation materialization",
+        "parallel copy aliasing",
+        "regression in divergent-action materialization",
+        "Rayon overhead on small batches"
+      ],
+      "minimum_checks": [
+        ".venv/bin/python -m maturin develop --release",
+        ".venv/bin/python scripts/check_vec_env_equivalence.py",
+        ".venv/bin/python scripts/smoke_smb.py",
+        "cargo test --release",
+        "cargo fmt --check",
+        "cargo check --release"
+      ],
+      "suggested_modal_artifact": "artifacts/benchmarks/p2-synced-obs-broadcast-copy.json",
+      "dedupe_status": "selected"
+    },
+    {
+      "proposal_id": "p1-fused-cropped-gray-area-resize",
+      "source_worker": "019f1476-d8ae-73e0-b990-78858559531e",
+      "merged_with": ["p3-direct-cropped-gray-resize"],
+      "hypothesis": "Add an exact default grayscale crop/resize fast path that fuses cropped grayscale rendering with the existing area-resize math for crop_top=32,crop_bottom=0,resize=84x84,grayscale=true.",
+      "expected_bottleneck": "Default path renders a 256x208 grayscale scratch frame and then walks area-resize contributions to produce 84x84, causing avoidable memory traffic and cache-unfriendly scratch reads.",
+      "expected_gain_pct": 18.0,
+      "expected_gain_range_pct": [12.0, 30.0],
+      "confidence": 0.55,
+      "estimated_wall_clock_minutes": 480,
+      "review_risk_penalty": 90,
+      "modal_wait_penalty": 10,
+      "priority_score": 0.017,
+      "files_likely_to_change": ["src/vec_env.rs", "src/emulator.rs", "docs/PERFORMANCE_PLAN.md"],
+      "correctness_risks": [
+        "non-bit-exact area rounding",
+        "sprite/background priority regressions",
+        "HUD/crop/scroll behavior drift",
+        "accidental nondefault RGB or uncropped path changes"
+      ],
+      "minimum_checks": [
+        "targeted byte-for-byte default pixel parity check",
+        ".venv/bin/python -m maturin develop --release",
+        ".venv/bin/python scripts/check_vec_env_equivalence.py",
+        ".venv/bin/python scripts/smoke_smb.py",
+        "cargo test --release",
+        "cargo fmt --check",
+        "cargo check --release"
+      ],
+      "suggested_modal_artifact": "artifacts/benchmarks/p1-fused-cropped-gray-area-resize.json",
+      "dedupe_status": "selected"
+    }
+  ],
+  "rejected_proposals": [
+    {
+      "proposal_id": "p3-direct-cropped-gray-resize",
+      "source_worker": "019f1477-317e-7f92-8252-c4466365e54c",
+      "reason": "Merged into p1-fused-cropped-gray-area-resize because both target the same default grayscale crop/resize renderer surface and would collide on src/vec_env.rs and src/emulator.rs."
+    }
+  ],
+  "work_items": [
+    {
+      "id": "synced-obs-broadcast-copy",
+      "proposal_id": "p2-synced-obs-broadcast-copy",
+      "hypothesis": "Optimize the synced-lane materialized observation copy while preserving exact contiguous output.",
+      "scope": "src/vec_env.rs output materialization only; docs only if needed; no Python API, emulator, reward, done, action, or benchmark contract changes.",
+      "status": "rejected_no_modal_evidence",
+      "owner": "worker-p2",
+      "lease_expires_at": "2026-06-29T19:13:09Z",
+      "base_sha": "c0d6f8fa69e65fc3175dacaefab4a01ab9184458",
+      "worktree_path": "/private/tmp/smb-fastenv-autoresearch/synced-obs-broadcast-copy",
+      "expected_gain_pct": 12.0,
+      "risk_notes": "Tiny diff preferred; must prove every lane is fully materialized and divergent-action materialization still works."
+    },
+    {
+      "id": "fused-cropped-gray-area-resize",
+      "proposal_id": "p1-fused-cropped-gray-area-resize",
+      "hypothesis": "Fuse the default cropped grayscale renderer and area-resize path exactly for the benchmark config.",
+      "scope": "src/vec_env.rs and src/emulator.rs default preprocessing internals; preserve all public Python and nondefault compatibility paths.",
+      "status": "accepted",
+      "owner": "worker-p1",
+      "lease_expires_at": "2026-06-30T01:43:09Z",
+      "base_sha": "c0d6f8fa69e65fc3175dacaefab4a01ab9184458",
+      "worktree_path": "/private/tmp/smb-fastenv-autoresearch/fused-cropped-gray-area-resize",
+      "expected_gain_pct": 18.0,
+      "risk_notes": "High correctness risk; requires byte-for-byte parity against the old scratch+resize path before any Modal slot."
+    }
+  ],
+  "candidates": [
+    {
+      "work_item_id": "fused-cropped-gray-area-resize",
+      "proposal_id": "p1-fused-cropped-gray-area-resize",
+      "worker_agent": "019f147b-e069-7c13-a6ed-9ab14c3b9b9f",
+      "branch": "codex/autoresearch-2026-06-29T17-38-02Z-fused-resize",
+      "worktree_path": "/private/tmp/smb-fastenv-autoresearch/fused-cropped-gray-area-resize",
+      "base_sha": "c0d6f8fa69e65fc3175dacaefab4a01ab9184458",
+      "accepted_commit_sha": "677e398aad148fe985290109454b551804dbcc09",
+      "changed_files": ["src/emulator.rs", "src/vec_env.rs"],
+      "local_checks": {
+        ".venv/bin/python -m maturin develop --release": "passed",
+        ".venv/bin/python scripts/check_vec_env_equivalence.py": "passed",
+        ".venv/bin/python scripts/smoke_smb.py": "passed",
+        "cargo fmt --check": "passed",
+        "cargo check --release": "passed",
+        "RUSTFLAGS='-L native=/Users/tsilva/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib -l dylib=python3.12' cargo test --release": "passed",
+        "targeted byte-for-byte parity test": "passed"
+      },
+      "worker_judge_modal": {
+        "artifact": "artifacts/benchmarks/p1-fused-cropped-gray-area-resize.json",
+        "run_url": "https://modal.com/apps/eng-tiago-silva/main/ap-TQVZ48DY3I5gZ3LwTJZsch",
+        "mean_env_steps_per_sec": 26861.503317220355,
+        "stdev_env_steps_per_sec": 493.0818046682315,
+        "best_env_steps_per_sec": 27556.13744932472,
+        "gain_pct_vs_original_baseline": 11.366924442348104
+      },
+      "coordinator_reproduction_modal": {
+        "artifact": "artifacts/benchmarks/p1-fused-cropped-gray-area-resize-repro-2026-06-29T1750Z.json",
+        "run_url": "https://modal.com/apps/eng-tiago-silva/main/ap-njPVOggeRHVOb1qyq8XnTf",
+        "mean_env_steps_per_sec": 27060.19039183714,
+        "stdev_env_steps_per_sec": 672.3720619619744,
+        "best_env_steps_per_sec": 27975.602393226116,
+        "gain_pct_vs_original_baseline": 12.190674631055277,
+        "speedup_multiplier_vs_original_baseline": 1.1219067463105528,
+        "verdict": "accepted"
+      },
+      "risk_notes": "Default-only grayscale crop/resize fast path; old scratch+resize path remains fallback for nondefault configs. Reproduction cleared the >10% mean threshold."
+    }
+  ],
+  "candidate_screening": [
+    {
+      "work_item_id": "synced-obs-broadcast-copy",
+      "proposal_id": "p2-synced-obs-broadcast-copy",
+      "worker_agent": "019f147b-9d5e-7173-bc40-6700d865eb64",
+      "branch": "codex/autoresearch-2026-06-29T17-38-02Z-synced-copy",
+      "worktree_path": "/private/tmp/smb-fastenv-autoresearch/synced-obs-broadcast-copy",
+      "changed_files": ["src/vec_env.rs"],
+      "local_checks": {
+        ".venv/bin/python -m maturin develop --release": "passed",
+        ".venv/bin/python scripts/check_vec_env_equivalence.py": "passed",
+        ".venv/bin/python scripts/smoke_smb.py": "passed",
+        "cargo fmt --check": "passed",
+        "cargo check --release": "passed",
+        "cargo test --release": "blocked by existing macOS PyO3 extension-module link/runtime setup"
+      },
+      "modal_attempt": {
+        "artifact": "artifacts/benchmarks/p2-synced-obs-broadcast-copy.json",
+        "run_url": "https://modal.com/apps/eng-tiago-silva/main/ap-05yqehlGC1bycFURRelZdL",
+        "result": "failed_before_timing",
+        "failure": "FileNotFoundError: could not find Level1-1.state; checked state dirs: <none>"
+      },
+      "verdict": "rejected_no_modal_evidence",
+      "reason": "The diff is correctness-plausible and local checks passed, but the worker's Modal attempt produced no timing artifact and the change only reduces copy call count while preserving the same total materialized bytes, making >10% mean improvement unlikely."
+    }
+  ],
+  "efficiency_metrics": {
+    "total_wall_clock_minutes": 22.6,
+    "baseline_wait_minutes": 2.1,
+    "proposal_wave_elapsed_minutes": 3.0,
+    "implementation_wave_elapsed_minutes": 10.2,
+    "coordinator_review_reproduction_elapsed_minutes": 7.3,
+    "modal_runs_used": 4,
+    "modal_runs_discarded": 1,
+    "modal_runs_saved_by_early_rejection": 1,
+    "proposals_received": 3,
+    "proposals_deduped": 1,
+    "proposals_rejected": 1,
+    "implemented": 2,
+    "benchmarked": 2,
+    "reproduced": 1,
+    "accepted": 1,
+    "stale_after_merge": 0,
+    "accepted_reproduced_gain_pct": 12.190674631055277,
+    "accepted_reproduced_gain_pct_per_wall_clock_minute": 0.5394103819040034,
+    "top_avoidable_wait_source": "Worker worktrees under /private/tmp could not auto-discover the sibling stable-retro state directory; future worker prompts should include explicit --state-dir from the start.",
+    "top_avoidable_race_conflict_source": "Renderer proposals p1 and p3 overlapped strongly and were deduped before implementation, avoiding a src/vec_env.rs and src/emulator.rs collision."
+  }
+}
