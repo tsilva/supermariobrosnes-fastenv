@@ -93,6 +93,7 @@ impl Cpu {
     }
 }
 
+#[derive(Clone)]
 struct Ppu {
     chr_rom: Vec<u8>,
     vertical_mirroring: bool,
@@ -384,14 +385,66 @@ impl Ppu {
 
     fn write_gray_frame_cropped(&self, dst: &mut [u8], crop_top: usize, height: usize) {
         debug_assert_eq!(dst.len(), NES_WIDTH * height);
+        self.write_bg_gray_cropped_tiled(dst, crop_top, height);
+        self.draw_sprites_gray_cropped(dst, crop_top, height);
+    }
+
+    fn write_bg_gray_cropped_tiled(&self, dst: &mut [u8], crop_top: usize, height: usize) {
+        if self.mask & 0x08 == 0 {
+            dst.fill(nes_gray(self.palette[0]));
+            return;
+        }
+
+        let pattern_base = if self.ctrl & 0x10 != 0 {
+            0x1000
+        } else {
+            0x0000
+        };
+        let scroll_x = self.render_scroll_x_px() as usize;
+        let scroll_y = self.scroll_y_px as usize;
+
         for out_y in 0..height {
             let y = crop_top + out_y;
-            for x in 0..NES_WIDTH {
-                let color = self.bg_color_index(x, y);
-                dst[out_y * NES_WIDTH + x] = nes_gray(color);
+            let world_y = if y < 32 { y } else { y + scroll_y };
+            let table_y = (world_y / 240) & 1;
+            let local_y = world_y % 240;
+            let tile_y = local_y / 8;
+            let fine_y = local_y & 7;
+            let row_start = out_y * NES_WIDTH;
+            let mut x = 0usize;
+
+            while x < NES_WIDTH {
+                let world_x = if y < 32 { x } else { x + scroll_x };
+                let table_x = (world_x / 256) & 1;
+                let table = table_y * 2 + table_x;
+                let local_x = world_x & 0xff;
+                let tile_x = local_x / 8;
+                let fine_x = local_x & 7;
+                let nt_base = 0x2000 + (table as u16) * 0x400;
+                let tile_id = self.ppu_read(nt_base + (tile_y * 32 + tile_x) as u16) as usize;
+                let attr =
+                    self.ppu_read(nt_base + 0x3c0 + ((tile_y / 4) * 8 + (tile_x / 4)) as u16);
+                let shift = ((tile_y & 0x02) << 1) | (tile_x & 0x02);
+                let palette_id = (attr >> shift) & 0x03;
+                let pattern_addr = pattern_base + tile_id * 16 + fine_y;
+                let lo = self.chr_rom[pattern_addr % self.chr_rom.len()];
+                let hi = self.chr_rom[(pattern_addr + 8) % self.chr_rom.len()];
+                let run = (8 - fine_x).min(NES_WIDTH - x);
+
+                for col in 0..run {
+                    let bit = 7 - (fine_x + col);
+                    let pixel = ((lo >> bit) & 1) | (((hi >> bit) & 1) << 1);
+                    let color = if pixel == 0 {
+                        self.palette[0]
+                    } else {
+                        self.palette[(palette_id as usize) * 4 + pixel as usize]
+                    };
+                    dst[row_start + x + col] = nes_gray(color);
+                }
+
+                x += run;
             }
         }
-        self.draw_sprites_gray_cropped(dst, crop_top, height);
     }
 
     fn write_rgb_frame(&self, dst: &mut [u8]) {
@@ -842,6 +895,7 @@ fn next_ppu_event_dot(current: usize) -> usize {
     }
 }
 
+#[derive(Clone)]
 pub struct NesEmulator {
     cpu: Cpu,
     ppu: Ppu,

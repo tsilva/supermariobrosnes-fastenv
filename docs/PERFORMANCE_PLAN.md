@@ -15,6 +15,15 @@ preprocessing contract: frame skip, grayscale, and frame stacking.
 - Frame skip, grayscale conversion, frame stacking, reward extraction, and
   termination checks belong in Rust.
 - The persistent observation buffer is the frame-stack state for the fast path.
+- Identical reset lanes may be represented by one shared emulator state while
+  every lane receives the same action. This is exact for deterministic SMB/NROM
+  execution: the first lane is stepped once, and its observation, reward, done
+  flags, `x_pos`, and `lives` are copied to the other identical lanes. If an
+  action vector diverges, the shared state is cloned into independent lanes
+  before the mixed action step runs.
+- The default cropped grayscale renderer uses SMB/NES tile structure directly:
+  background pixels are emitted in 8-pixel tile-row runs, then the existing
+  sprite overlay path applies priority and palette semantics.
 
 ## Bottlenecks To Eliminate
 
@@ -113,6 +122,26 @@ Once single-thread hot paths are clean:
 - Chunk lanes to avoid per-env scheduling overhead.
 - Keep each lane's emulator state independent and cache-local.
 - Benchmark `num_envs x threads` grids to find saturation points.
+
+Additional deterministic-lane fast path:
+
+- Reset creates identical lanes for the benchmark and for many evaluation
+  starts.
+- Uniform action batches can share one emulator state until the first mixed
+  action batch.
+- Mixed action batches materialize independent lane states before stepping, so
+  the public vector-env contract stays the same.
+
+Intentionally unsupported cases:
+
+- The emulator remains scoped to Super Mario Bros mapper 0 / NROM. Other NES
+  mappers, save-state formats, audio, and general Gym Retro compatibility are
+  outside this fast path.
+- The shared-lane optimization assumes deterministic emulator state and no
+  per-lane RNG, wrappers, or hidden side effects outside `NesEmulator`.
+- The tiled renderer is the optimized grayscale cropped path used by the RL
+  benchmark. RGB and uncropped compatibility renderers are kept separate and are
+  not the primary optimization target.
 
 ### 9. Benchmark Integrity
 

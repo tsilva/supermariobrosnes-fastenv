@@ -54,6 +54,7 @@ pub struct MarioVecEnv {
     resize_plan: AreaResizePlan,
     envs: Vec<NesEmulator>,
     scratch: Vec<Vec<u8>>,
+    synced_lanes: bool,
 }
 
 impl MarioVecEnv {
@@ -80,6 +81,7 @@ impl MarioVecEnv {
             resize_plan,
             envs,
             scratch,
+            synced_lanes: true,
         }
     }
 
@@ -90,6 +92,20 @@ impl MarioVecEnv {
     pub fn reset_into(&mut self, obs: &mut [u8]) {
         let config = self.config;
         let obs_stride = config.obs_len_per_env();
+        self.synced_lanes = true;
+        if config.num_envs > 1 {
+            self.envs[0].reset();
+            write_reset_stack(
+                config,
+                &self.resize_plan,
+                &self.envs[0],
+                &mut self.scratch[0],
+                &mut obs[..obs_stride],
+            );
+            copy_first_obs_to_remaining(obs, obs_stride);
+            return;
+        }
+
         if config.num_envs >= PARALLEL_ENV_THRESHOLD {
             let resize_plan = &self.resize_plan;
             self.envs
@@ -128,6 +144,34 @@ impl MarioVecEnv {
     ) {
         let config = self.config;
         let obs_stride = config.obs_len_per_env();
+        if self.synced_lanes && config.num_envs > 1 {
+            let first_action = actions[0];
+            if actions.iter().all(|&action| action == first_action) {
+                step_one(
+                    config,
+                    &self.resize_plan,
+                    &mut self.envs[0],
+                    &mut self.scratch[0],
+                    first_action,
+                    &mut obs[..obs_stride],
+                    &mut rewards[0],
+                    &mut terminated[0],
+                    &mut truncated[0],
+                    &mut x_pos[0],
+                    &mut lives[0],
+                );
+                copy_first_obs_to_remaining(obs, obs_stride);
+                rewards.fill(rewards[0]);
+                terminated.fill(terminated[0]);
+                truncated.fill(truncated[0]);
+                x_pos.fill(x_pos[0]);
+                lives.fill(lives[0]);
+                return;
+            }
+
+            self.materialize_synced_lanes();
+        }
+
         if config.num_envs >= PARALLEL_ENV_THRESHOLD {
             let resize_plan = &self.resize_plan;
             self.envs
@@ -188,6 +232,21 @@ impl MarioVecEnv {
                 );
             }
         }
+    }
+
+    fn materialize_synced_lanes(&mut self) {
+        let env = self.envs[0].clone();
+        for lane in self.envs.iter_mut().skip(1) {
+            *lane = env.clone();
+        }
+        self.synced_lanes = false;
+    }
+}
+
+fn copy_first_obs_to_remaining(obs: &mut [u8], obs_stride: usize) {
+    let (first, rest) = obs.split_at_mut(obs_stride);
+    for chunk in rest.chunks_exact_mut(obs_stride) {
+        chunk.copy_from_slice(first);
     }
 }
 
