@@ -1,0 +1,4 @@
+interface:
+  display_name: "Modal Benchmark"
+  short_description: "Run the canonical Modal CPU benchmark."
+  default_prompt: "Run the Modal benchmark for this repo and report the results."
