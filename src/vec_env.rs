@@ -455,19 +455,21 @@ fn resize_plane_area(
     dst_offset: usize,
 ) {
     let rounding = plan.denom / 2;
-    for (dst_y, y_bin) in plan.y_bins.iter().enumerate() {
-        for (dst_x, x_bin) in plan.x_bins.iter().enumerate() {
-            let mut sum = 0u64;
-            for (dy, &wy) in y_bin.weights.iter().enumerate() {
-                let src_row = src_offset + (y_bin.start + dy) * plan.src_width;
-                let wy = wy as u64;
-                for (dx, &wx) in x_bin.weights.iter().enumerate() {
-                    let weight = wy * wx as u64;
-                    sum += src[src_row + x_bin.start + dx] as u64 * weight;
-                }
-            }
-            dst[dst_offset + dst_y * plan.dst_width + dst_x] =
-                ((sum + rounding) / plan.denom) as u8;
+    debug_assert!(src.len() >= src_offset + plan.src_width * plan.src_height);
+    debug_assert!(dst.len() >= dst_offset + plan.dst_width * plan.dst_height);
+
+    for dst_i in 0..plan.pixel_starts.len() - 1 {
+        let mut sum = 0u64;
+        let start = plan.pixel_starts[dst_i];
+        let end = plan.pixel_starts[dst_i + 1];
+        for contribution in &plan.contributions[start..end] {
+            // SAFETY: AreaResizePlan contributions are built from dimensions validated above.
+            let source = unsafe { *src.get_unchecked(src_offset + contribution.src_offset) };
+            sum += source as u64 * contribution.weight as u64;
+        }
+        // SAFETY: dst_i iterates over exactly dst_width * dst_height planned pixels.
+        unsafe {
+            *dst.get_unchecked_mut(dst_offset + dst_i) = ((sum + rounding) / plan.denom) as u8;
         }
     }
 }
@@ -477,28 +479,64 @@ struct AreaResizePlan {
     src_height: usize,
     dst_width: usize,
     dst_height: usize,
-    x_bins: Vec<AreaAxisBin>,
-    y_bins: Vec<AreaAxisBin>,
+    pixel_starts: Vec<usize>,
+    contributions: Vec<AreaContribution>,
     denom: u64,
 }
 
 impl AreaResizePlan {
     fn new(src_width: usize, src_height: usize, dst_width: usize, dst_height: usize) -> Self {
+        let x_bins = build_area_axis(src_width, dst_width);
+        let y_bins = build_area_axis(src_height, dst_height);
+        let (pixel_starts, contributions) = build_area_pixels(src_width, &x_bins, &y_bins);
         Self {
             src_width,
             src_height,
             dst_width,
             dst_height,
-            x_bins: build_area_axis(src_width, dst_width),
-            y_bins: build_area_axis(src_height, dst_height),
+            pixel_starts,
+            contributions,
             denom: (src_width as u64) * (src_height as u64),
         }
     }
 }
 
+struct AreaContribution {
+    src_offset: usize,
+    weight: u32,
+}
+
 struct AreaAxisBin {
     start: usize,
     weights: Vec<u32>,
+}
+
+fn build_area_pixels(
+    src_width: usize,
+    x_bins: &[AreaAxisBin],
+    y_bins: &[AreaAxisBin],
+) -> (Vec<usize>, Vec<AreaContribution>) {
+    let mut pixel_starts = Vec::with_capacity(x_bins.len() * y_bins.len() + 1);
+    let mut contributions = Vec::new();
+    for y_bin in y_bins {
+        for x_bin in x_bins {
+            pixel_starts.push(contributions.len());
+            for (dy, &wy) in y_bin.weights.iter().enumerate() {
+                let src_row = (y_bin.start + dy) * src_width;
+                for (dx, &wx) in x_bin.weights.iter().enumerate() {
+                    let weight = wy * wx;
+                    if weight != 0 {
+                        contributions.push(AreaContribution {
+                            src_offset: src_row + x_bin.start + dx,
+                            weight,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    pixel_starts.push(contributions.len());
+    (pixel_starts, contributions)
 }
 
 fn build_area_axis(src_len: usize, dst_len: usize) -> Vec<AreaAxisBin> {
@@ -520,4 +558,119 @@ fn build_area_axis(src_len: usize, dst_len: usize) -> Vec<AreaAxisBin> {
             AreaAxisBin { start, weights }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reference_resize_plane_area(
+        src: &[u8],
+        dst: &mut [u8],
+        src_width: usize,
+        src_height: usize,
+        dst_width: usize,
+        dst_height: usize,
+        src_offset: usize,
+        dst_offset: usize,
+    ) {
+        let x_bins = build_area_axis(src_width, dst_width);
+        let y_bins = build_area_axis(src_height, dst_height);
+        let denom = (src_width as u64) * (src_height as u64);
+        let rounding = denom / 2;
+
+        for (dst_y, y_bin) in y_bins.iter().enumerate() {
+            for (dst_x, x_bin) in x_bins.iter().enumerate() {
+                let mut sum = 0u64;
+                for (dy, &wy) in y_bin.weights.iter().enumerate() {
+                    let src_row = src_offset + (y_bin.start + dy) * src_width;
+                    let wy = wy as u64;
+                    for (dx, &wx) in x_bin.weights.iter().enumerate() {
+                        let weight = wy * wx as u64;
+                        sum += src[src_row + x_bin.start + dx] as u64 * weight;
+                    }
+                }
+                dst[dst_offset + dst_y * dst_width + dst_x] = ((sum + rounding) / denom) as u8;
+            }
+        }
+    }
+
+    #[test]
+    fn precomputed_area_resize_matches_reference_default_grayscale() {
+        let config = VecEnvConfig {
+            num_envs: 16,
+            frame_skip: 4,
+            grayscale: true,
+            frame_stack: 4,
+            terminate_on_flag: true,
+            crop_top: 32,
+            crop_bottom: 0,
+            resize_width: 84,
+            resize_height: 84,
+        };
+        let plan = AreaResizePlan::new(NES_WIDTH, config.source_height(), 84, 84);
+        let src_len = NES_WIDTH * config.source_height();
+        let src = (0..src_len)
+            .map(|idx| ((idx * 37 + idx / 251 + 19) & 0xff) as u8)
+            .collect::<Vec<_>>();
+        let mut optimized = vec![0; 84 * 84];
+        let mut reference = vec![0; 84 * 84];
+
+        resize_frame_area(config, &plan, &src, &mut optimized);
+        reference_resize_plane_area(
+            &src,
+            &mut reference,
+            NES_WIDTH,
+            config.source_height(),
+            84,
+            84,
+            0,
+            0,
+        );
+
+        assert_eq!(optimized, reference);
+    }
+
+    #[test]
+    fn precomputed_area_resize_matches_reference_rgb_planes() {
+        let src_width = 256;
+        let src_height = 208;
+        let dst_width = 84;
+        let dst_height = 84;
+        let config = VecEnvConfig {
+            num_envs: 1,
+            frame_skip: 4,
+            grayscale: false,
+            frame_stack: 1,
+            terminate_on_flag: true,
+            crop_top: 32,
+            crop_bottom: 0,
+            resize_width: dst_width,
+            resize_height: dst_height,
+        };
+        let plan = AreaResizePlan::new(src_width, src_height, dst_width, dst_height);
+        let src_plane = src_width * src_height;
+        let dst_plane = dst_width * dst_height;
+        let src = (0..src_plane * RGB_CHANNELS)
+            .map(|idx| ((idx * 17 + idx / 97 + 31) & 0xff) as u8)
+            .collect::<Vec<_>>();
+        let mut optimized = vec![0; dst_plane * RGB_CHANNELS];
+        let mut reference = vec![0; dst_plane * RGB_CHANNELS];
+
+        resize_frame_area(config, &plan, &src, &mut optimized);
+        for channel in 0..RGB_CHANNELS {
+            reference_resize_plane_area(
+                &src,
+                &mut reference,
+                src_width,
+                src_height,
+                dst_width,
+                dst_height,
+                channel * src_plane,
+                channel * dst_plane,
+            );
+        }
+
+        assert_eq!(optimized, reference);
+    }
 }

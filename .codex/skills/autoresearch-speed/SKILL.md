@@ -97,6 +97,14 @@ If subagent/fork tooling is unavailable, stop and report that blocker. Do not si
    - Run the same Modal benchmark/profile used for the baseline.
    - Compute gain as `(final_mean / baseline_mean - 1) * 100`.
    - Report baseline samples, final samples, both means, both stdevs, both best values, gain percentage, speedup multiplier, checks run, and changed files.
+   - End with paste-ready manual playback commands for both regular and preprocessed views:
+
+```bash
+.venv/bin/python scripts/play.py --mode external --view raw --state Level1-1 --scale 3
+.venv/bin/python scripts/play.py --mode external --view preprocessed --state Level1-1 --frame-skip 4 --frame-stack 4 --crop-top 32 --crop-bottom 0 --resize-width 84 --resize-height 84 --scale 4
+```
+
+   - If state files require a non-default location, append `--state-dir <path>` to both commands.
 
 ## Campaign Track
 
@@ -184,6 +192,7 @@ Merge one candidate at a time. After every accepted merge:
 - remove merged, rejected, expired, or superseded campaign worktrees
 - run `git worktree list` and `git worktree prune`
 - confirm no stale campaign paths remain
+- end the report with the regular and preprocessed manual playback commands from the Single-Agent final timing section
 
 Do not assume independent gains add. Rebase and remeasure remaining candidates against the new baseline.
 
