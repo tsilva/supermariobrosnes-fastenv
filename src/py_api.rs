@@ -243,7 +243,7 @@ impl FastMarioVecEnv {
 }
 
 #[pymodule]
-fn _supermarioemu(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _supermariobrosnes_fastenv(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<FastMarioVecEnv>()?;
     m.add("NES_WIDTH", NES_WIDTH)?;
     m.add("NES_HEIGHT", NES_HEIGHT)?;

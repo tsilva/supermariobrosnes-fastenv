@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-from supermarioemu import SuperMarioBrosVecEnv
+from supermariobrosnes_fastenv import SuperMarioBrosVecEnv
 
 
 def parse_args() -> argparse.Namespace:

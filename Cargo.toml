@@ -1,12 +1,12 @@
 [package]
-name = "supermarioemu"
+name = "supermariobrosnes-fastenv"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
 publish = false
 
 [lib]
-name = "_supermarioemu"
+name = "_supermariobrosnes_fastenv"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]

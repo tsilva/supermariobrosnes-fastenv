@@ -488,7 +488,7 @@ wheels = [
 ]
 
 [[package]]
-name = "supermarioemu"
+name = "supermariobrosnes-fastenv"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

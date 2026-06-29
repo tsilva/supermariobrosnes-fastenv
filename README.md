@@ -33,12 +33,12 @@ Expected SHA-256:
 f61548fdf1670cffefcc4f0b7bdcdd9eaba0c226e3b74f8666071496988248de
 ```
 
-Import the package as `supermarioemu`:
+Import the package as `supermariobrosnes_fastenv`:
 
 ```python
 import numpy as np
 
-from supermarioemu import SuperMarioBrosVecEnv
+from supermariobrosnes_fastenv import SuperMarioBrosVecEnv
 
 env = SuperMarioBrosVecEnv(
     rom_path="~/Desktop/roms/NES/mapper-000-NROM/SuperMarioBros-Nes-v0.nes",
@@ -81,7 +81,7 @@ modal run scripts/modal_benchmark_sps.py --output-json artifacts/benchmarks/moda
 - The current emulator scope is SuperMarioBros-Nes mapper 0 NROM.
 - The Python package exposes `SuperMarioBrosVecEnv` and `ACTION_MEANINGS`.
 - The default action set is `noop`, `right`, `right_b`, `right_a`, `right_a_b`, `a`, `left`, and `start`.
-- Use `--state Level1-1` or another stable-retro state to start from a saved level state. If needed, pass `--state-dir` or set `SUPERMARIOEMU_STATE_DIR`.
+- Use `--state Level1-1` or another stable-retro state to start from a saved level state. If needed, pass `--state-dir` or set `SUPERMARIOBROSNES_FASTENV_STATE_DIR`.
 - Benchmark JSON can be written with `scripts/benchmark_sps.py --output-json ...`.
 - The Modal benchmark path expects `modal` to be installed and authenticated outside this package. It sends the local ROM and state bytes to the remote container at run time and defaults to `Level1-1`, `Level1-2`, `Level1-3`, and `Level1-4`.
 - Play mode uses the native SDL2 library. If SDL2 is not installed or discoverable, `scripts/play.py` exits with an SDL backend error.

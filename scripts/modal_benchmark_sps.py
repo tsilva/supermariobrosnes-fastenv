@@ -122,7 +122,7 @@ def candidate_state_dirs(state_dir: str) -> list[Path]:
     candidates: list[Path | None] = []
     if state_dir:
         candidates.append(Path(state_dir).expanduser())
-    env_dir = os.environ.get("SUPERMARIOEMU_STATE_DIR")
+    env_dir = os.environ.get("SUPERMARIOBROSNES_FASTENV_STATE_DIR")
     if env_dir:
         candidates.append(Path(env_dir).expanduser())
     candidates.append(stable_retro_state_dir())

@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 
 from play import action_id, latest_frame, png_from_frame
-from supermarioemu import SuperMarioBrosVecEnv
+from supermariobrosnes_fastenv import SuperMarioBrosVecEnv
 
 
 DEFAULT_ROM = Path("~/Desktop/roms/NES/mapper-000-NROM/SuperMarioBros-Nes-v0.nes")

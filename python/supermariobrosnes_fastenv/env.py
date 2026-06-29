@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 from gymnasium import spaces
 
-from ._supermarioemu import FastMarioVecEnv
+from ._supermariobrosnes_fastenv import FastMarioVecEnv
 
 ACTION_MEANINGS = ("noop", "right", "right_b", "right_a", "right_a_b", "a", "left", "start")
 DEFAULT_STABLE_RETRO_GAME = "SuperMarioBros-Nes-v0"
@@ -51,7 +51,7 @@ def _candidate_state_dirs(state_dir: str | Path | None = None) -> list[Path]:
     candidates: list[Path | None] = []
     if state_dir is not None:
         candidates.append(Path(state_dir).expanduser())
-    env_dir = os.environ.get("SUPERMARIOEMU_STATE_DIR")
+    env_dir = os.environ.get("SUPERMARIOBROSNES_FASTENV_STATE_DIR")
     if env_dir:
         candidates.append(Path(env_dir).expanduser())
     candidates.append(_stable_retro_state_dir())

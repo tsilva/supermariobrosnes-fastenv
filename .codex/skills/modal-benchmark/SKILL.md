@@ -1,6 +1,6 @@
 ---
 name: modal-benchmark
-description: Run the canonical clean-machine Modal CPU benchmark for this supermarioemu repo across the first four Super Mario Bros NES Level1 states and report per-level plus average throughput. Use when the user invokes /modal-benchmark, asks to benchmark on Modal/modal.com, wants a clean CPU-only baseline, wants to compare an optimization on fresh compute, or asks for the current Modal benchmark result format.
+description: Run the canonical clean-machine Modal CPU benchmark for this SuperMarioBros-Nes-turbo repo across the first four Super Mario Bros NES Level1 states and report per-level plus average throughput. Use when the user invokes /modal-benchmark, asks to benchmark on Modal/modal.com, wants a clean CPU-only baseline, wants to compare an optimization on fresh compute, or asks for the current Modal benchmark result format.
 ---
 
 # Modal Benchmark
@@ -30,7 +30,7 @@ Use the launcher defaults unless the user asks otherwise:
 
 The launcher runs those states one at a time in the same clean Modal function.
 It uploads the local ROM bytes plus the four stable-retro `.state` files at
-runtime. State files resolve from an explicit `--state-dir`, `SUPERMARIOEMU_STATE_DIR`,
+runtime. State files resolve from an explicit `--state-dir`, `SUPERMARIOBROSNES_FASTENV_STATE_DIR`,
 an installed `stable_retro` package, or the sibling `stable-retro-turbo`
 checkout.
 

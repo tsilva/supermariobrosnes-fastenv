@@ -57,7 +57,7 @@ If subagent/fork tooling is unavailable, stop and report that blocker. Do not si
 2. Inspect the live hot path before creating the worker assignment:
    - `scripts/benchmark_sps.py`
    - `scripts/modal_benchmark_sps.py` when Modal is involved
-   - `python/supermarioemu/env.py`
+   - `python/supermariobrosnes_fastenv/env.py`
    - `src/py_api.rs`
    - `src/vec_env.rs`
    - `src/emulator.rs`

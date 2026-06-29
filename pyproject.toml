@@ -3,7 +3,7 @@ requires = ["maturin>=1.7,<2"]
 build-backend = "maturin"
 
 [project]
-name = "supermarioemu"
+name = "supermariobrosnes-fastenv"
 version = "0.1.0"
 description = "Blazing fast SuperMarioBros-Nes environment for RL research."
 readme = "README.md"
@@ -21,7 +21,7 @@ dev = [
 ]
 
 [tool.maturin]
-module-name = "supermarioemu._supermarioemu"
+module-name = "supermariobrosnes_fastenv._supermariobrosnes_fastenv"
 python-source = "python"
 features = ["pyo3/extension-module"]
 
