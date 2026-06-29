@@ -1,0 +1,4 @@
+interface:
+  display_name: "Optimize SPS"
+  short_description: "Benchmark-driven SMB emulator optimization"
+  default_prompt: "Use /optimize-sps to improve Super Mario Bros emulator throughput while preserving benchmark correctness."
