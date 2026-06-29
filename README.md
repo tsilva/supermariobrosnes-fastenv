@@ -4,9 +4,7 @@
   **🚀 Blazing fast SuperMarioBros-Nes environment for RL research 🍄**
 </div>
 
-`SuperMarioBros-Nes-turbo` is a local Python package for running fast vectorized Super Mario Bros NES reinforcement-learning environments. It is for RL researchers and experimenters who need many CPU rollout steps without going through a general-purpose emulator stack. You use it by building the Rust extension, pointing it at your own ROM, then importing `supermarioemu` or running the benchmark scripts.
-
-The package exposes a vectorized batch API only. The hot path crosses from Python to Rust once per batched step, while frame skip, reward extraction, termination checks, preprocessing, frame stacking, and observation-buffer writes stay in Rust.
+`SuperMarioBros-Nes-turbo` is a blazing-fast vectorized Super Mario Bros NES environment for reinforcement-learning research. It uses a custom Rust NES emulator specialized for SuperMarioBros-Nes mapper 0/NROM, with vectorized stepping on the Rust side so Python crosses into Rust once per batched step. Game-specific preprocessing, including frame skip, grayscale or RGB rendering, cropping, resizing, frame stacking, reward extraction, termination checks, and observation-buffer writes, happens before data returns to Python. It follows the same throughput-first direction as [stable-retro-turbo](https://github.com/tsilva/stable-retro-turbo), but drops broad stable-retro compatibility so the emulator and batch API can specialize on Super Mario Bros NES.
 
 ## Install
 
