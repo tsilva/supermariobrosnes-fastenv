@@ -226,6 +226,15 @@ Use short leases and expiry times for proposal and implementation workers. Do no
 
    - If state files require a non-default location, append `--state-dir <path>` to both commands.
 
+20. After the final report, if the user explicitly accepts the autoresearch results or asks to merge them, immediately merge the run into `main` and clean up the campaign branches/worktrees:
+   - Commit any approved final skill/protocol updates on the orchestration branch before merging.
+   - Verify the worktree has no unrelated dirty changes. If unrelated dirty changes exist, stop and ask how to proceed.
+   - Switch to local `main` and merge the orchestration branch with `git merge --ff-only <orchestration_branch>`. If fast-forward is not possible, stop and report the blocker instead of creating an implicit merge commit.
+   - Delete the orchestration branch and all implementation branches created for the run.
+   - Remove merged, rejected, expired, or superseded implementation worktrees, then run `git worktree prune`.
+   - Verify `git status --short --branch`, `git branch --list 'codex/autoresearch-*'`, and `git worktree list`.
+   - Do not push unless the user explicitly asks.
+
 Agents may request benchmark escalation only by invoking `/modal-benchmark`. The underlying command shape used by that skill is:
 
 ```bash
