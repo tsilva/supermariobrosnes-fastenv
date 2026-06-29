@@ -48,11 +48,37 @@ uv run maturin develop --release
 ```bash
 uv run python scripts/smoke_smb.py
 uv run python scripts/benchmark_vec_env.py --num-envs 8 --frame-skip 4 --frame-stack 4
-uv run python scripts/benchmark_sps.py --num-envs 64 --steps 500 --repeats 3
+uv run python scripts/benchmark_sps.py --num-envs 16 --steps 500 --repeats 3
 ```
 
 The `start` action is included so the raw ROM can leave the title screen without
 special Python-side reset logic.
+
+### Clean CPU Benchmarks On Modal
+
+Use Modal for the canonical optimization baseline so timings come from a fresh
+CPU-only machine instead of a busy local workstation. The default profile is the
+standard 16-env benchmark. Run this from the repo root with an authenticated
+Modal CLI (`modal setup` if this is the first time):
+
+```bash
+modal run scripts/modal_benchmark_sps.py \
+  --output-json artifacts/benchmarks/modal-baseline.json
+```
+
+For each optimization attempt, run the same command again and save a new JSON
+artifact:
+
+```bash
+modal run scripts/modal_benchmark_sps.py \
+  --output-json artifacts/benchmarks/modal-optimization.json
+```
+
+The launcher sends the local ROM bytes to the remote container at run time, so
+the Modal image stays generic while the benchmark still uses the same ROM as the
+local scripts. Override it with `--rom-path` if needed. The JSON includes the
+benchmark config, per-repeat timings, summary statistics, Modal CPU/memory
+metadata, local Git commit/status, and the ROM SHA-256.
 
 ## Play
 
