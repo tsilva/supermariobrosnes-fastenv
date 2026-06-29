@@ -22,7 +22,7 @@
   "max_parallel_modal_runs": 3,
   "max_total_modal_runs": 6,
   "max_estimated_spend_usd": 10,
-  "modal_runs_used": 1,
+  "modal_runs_used": 3,
   "modal_runs_reserved_for_reproduction": 1,
   "integration_sha": "671b6c752b1f0f6c4c462cd5b653b7802297f91b",
   "current_baseline_artifact": "artifacts/benchmarks/autoresearch-baseline-2026-06-29-1913.json",
@@ -182,14 +182,100 @@
       "risk_notes": "Must prove final obs/reward/done/info parity against repeated step_fast calls."
     }
   ],
-  "candidates": [],
-  "candidate_screening": [],
+  "candidates": [
+    {
+      "work_item_id": "area84-inner-loop-hoist",
+      "proposal_id": "area84-inner-loop-hoist",
+      "worker_agent": "019f14d3-5f80-7d82-ac85-abe54a5ff25c",
+      "branch": "codex/autoresearch-2026-06-29T19-13-25Z-area84",
+      "worktree_path": "/Users/tsilva/repos/tsilva/SuperMarioBros-Nes-turbo-worktrees/area84-inner-loop-hoist",
+      "base_sha": "671b6c7",
+      "head_sha": "d36a1c54386a6efc1c55f3d59d39edc9f5c7e360",
+      "integrated_commit_sha": "44f705e",
+      "changed_files": [
+        "src/emulator.rs"
+      ],
+      "local_checks": {
+        "worker cargo fmt --check": "passed",
+        "worker cargo check --release": "passed",
+        "worker cargo test --release": "passed with PYO3_PYTHON plus libpython RUSTFLAGS after initial PyO3 link failure",
+        "worker .venv/bin/python -m maturin develop --release": "passed with VIRTUAL_ENV pointing at main checkout .venv",
+        "worker .venv/bin/python scripts/check_vec_env_equivalence.py": "passed",
+        "worker .venv/bin/python scripts/smoke_smb.py": "passed",
+        "coordinator cargo fmt --check": "passed",
+        "coordinator cargo check --release": "passed",
+        "coordinator .venv/bin/python -m maturin develop --release": "passed",
+        "coordinator .venv/bin/python scripts/check_vec_env_equivalence.py": "passed",
+        "coordinator .venv/bin/python scripts/smoke_smb.py": "passed",
+        "coordinator cargo test --release with PYO3_PYTHON plus libpython RUSTFLAGS": "passed"
+      },
+      "worker_judge_modal": {
+        "artifact": "artifacts/benchmarks/area84-inner-loop-hoist-2026-06-29.json",
+        "run_url": "https://modal.com/apps/eng-tiago-silva/main/ap-imEDzEacukAIACkp61aCs3",
+        "mean_env_steps_per_sec": 31553.345265806536,
+        "stdev_env_steps_per_sec": 304.92637285086744,
+        "best_env_steps_per_sec": 32008.039267174438,
+        "gain_pct_vs_current_baseline": 17.410236810785487,
+        "level_samples": {
+          "Level1-1": [31556.95, 31603.48, 31668.35],
+          "Level1-2": [31087.81, 31364.41, 30895.59],
+          "Level1-3": [31688.96, 31642.05, 31670.30],
+          "Level1-4": [31720.49, 31733.73, 32008.04]
+        }
+      },
+      "verdict": "needs_coordinator_reproduction",
+      "risk_notes": "Only correctness-sensitive shortcut is direct nametable mirroring in the default area path; worker added parity test against ppu_read and existing scratch-resize parity still passes."
+    }
+  ],
+  "candidate_screening": [
+    {
+      "work_item_id": "rust-repeated-uniform-step",
+      "proposal_id": "rust-repeated-uniform-step",
+      "worker_agent": "019f14d3-a194-77e3-9203-8611e11c6688",
+      "branch": "codex/autoresearch-2026-06-29T19-13-25Z-repeated-step",
+      "worktree_path": "/Users/tsilva/repos/tsilva/SuperMarioBros-Nes-turbo-worktrees/rust-repeated-uniform-step",
+      "base_sha": "671b6c7",
+      "head_sha": "a93c77e8699df4d254f2c18befb052c36377adca",
+      "changed_files": [
+        "python/supermariobrosnes_fastenv/env.py",
+        "scripts/benchmark_sps.py",
+        "scripts/check_repeated_uniform_step.py",
+        "src/py_api.rs",
+        "src/vec_env.rs"
+      ],
+      "local_checks": {
+        "cargo fmt --check": "passed",
+        "cargo check --release": "passed",
+        "cargo test --release": "passed with PYO3_PYTHON plus libpython RUSTFLAGS after initial PyO3 link failure",
+        ".venv/bin/python -m maturin develop --release": "passed with VIRTUAL_ENV set after initial discovery failure",
+        ".venv/bin/python scripts/check_vec_env_equivalence.py": "passed",
+        ".venv/bin/python scripts/smoke_smb.py": "passed",
+        "scripts/check_repeated_uniform_step.py --state-dir": "passed"
+      },
+      "worker_judge_modal": {
+        "artifact": "artifacts/benchmarks/rust-repeated-uniform-step-2026-06-29.json",
+        "run_url": "https://modal.com/apps/eng-tiago-silva/main/ap-3bhOcqnjxyWHDSCv4VPqRs",
+        "mean_env_steps_per_sec": 19605.193282965898,
+        "stdev_env_steps_per_sec": 3980.164564846532,
+        "best_env_steps_per_sec": 22132.788909516206,
+        "gain_pct_vs_current_baseline": -27.050084793202245,
+        "level_samples": {
+          "Level1-1": [22132.8, 22115.6, 22090.8],
+          "Level1-2": [21441.0, 21654.3, 21416.4],
+          "Level1-3": [21140.1, 21132.5, 21142.5],
+          "Level1-4": [13662.0, 13667.1, 13667.4]
+        }
+      },
+      "verdict": "rejected_under_threshold",
+      "risk_notes": "Locally correct additive API, but the one worker Modal run was substantially below baseline, so coordinator reproduction was not warranted."
+    }
+  ],
   "efficiency_metrics": {
     "baseline_wait_minutes": 62,
     "proposal_wave_elapsed_minutes": 6,
     "proposals_received": 13,
     "proposals_deduped_selected": 2,
-    "modal_runs_used": 1,
-    "modal_runs_remaining": 5
+    "modal_runs_used": 3,
+    "modal_runs_remaining": 3
   }
 }
