@@ -3,6 +3,7 @@ use crate::emulator::{
     MarioAction, NesEmulator, StateLoadError, FRAME_PIXELS_RGB, NES_HEIGHT, NES_WIDTH, RGB_CHANNELS,
 };
 use rayon::prelude::*;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const PARALLEL_ENV_THRESHOLD: usize = 4;
 
@@ -61,7 +62,10 @@ pub struct MarioVecEnv {
     config: VecEnvConfig,
     resize_plan: AreaResizePlan,
     envs: Vec<NesEmulator>,
-    initial_state: Option<Vec<u8>>,
+    initial_states: Vec<InitialState>,
+    weighted_initial_states: bool,
+    active_state_indices: Vec<i32>,
+    rng: XorShift64,
     scratch: Vec<Vec<u8>>,
     synced_lanes: bool,
 }
@@ -70,7 +74,9 @@ impl MarioVecEnv {
     pub fn new(
         cart: Cartridge,
         config: VecEnvConfig,
-        initial_state: Option<Vec<u8>>,
+        initial_states: Vec<InitialState>,
+        weighted_initial_states: bool,
+        seed: u64,
     ) -> Result<Self, StateLoadError> {
         let resize_plan = AreaResizePlan::new(
             NES_WIDTH,
@@ -93,7 +99,10 @@ impl MarioVecEnv {
             config,
             resize_plan,
             envs,
-            initial_state,
+            initial_states,
+            weighted_initial_states,
+            active_state_indices: vec![-1; config.num_envs],
+            rng: XorShift64::new(seed),
             scratch,
             synced_lanes: true,
         };
@@ -102,28 +111,44 @@ impl MarioVecEnv {
     }
 
     fn reset_envs(&mut self) -> Result<(), StateLoadError> {
-        if let Some(initial_state) = self.initial_state.as_deref() {
+        if self.initial_states.is_empty() {
             for env in &mut self.envs {
-                env.load_fceu_state(initial_state)?;
+                env.reset();
             }
+            self.active_state_indices.fill(-1);
+            self.synced_lanes = true;
             return Ok(());
         }
 
-        for env in &mut self.envs {
-            env.reset();
+        let mut first_state_index: Option<usize> = None;
+        let mut all_same = true;
+        for env_idx in 0..self.config.num_envs {
+            let state_index = self.initial_state_index_for_env(env_idx);
+            if let Some(first) = first_state_index {
+                all_same &= first == state_index;
+            } else {
+                first_state_index = Some(state_index);
+            }
+            self.active_state_indices[env_idx] = state_index as i32;
+            self.envs[env_idx].load_fceu_state(&self.initial_states[state_index].data)?;
         }
+        self.synced_lanes = all_same;
         Ok(())
     }
 
-    fn reset_env(
-        env: &mut NesEmulator,
-        initial_state: Option<&[u8]>,
-    ) -> Result<(), StateLoadError> {
-        if let Some(initial_state) = initial_state {
-            env.load_fceu_state(initial_state)
+    fn initial_state_index_for_env(&mut self, env_idx: usize) -> usize {
+        if self.weighted_initial_states {
+            let sample = self.rng.next_unit_f64();
+            for (idx, state) in self.initial_states.iter().enumerate() {
+                if sample < state.cumulative_weight {
+                    return idx;
+                }
+            }
+            self.initial_states.len() - 1
+        } else if self.initial_states.len() == 1 {
+            0
         } else {
-            env.reset();
-            Ok(())
+            env_idx
         }
     }
 
@@ -134,9 +159,8 @@ impl MarioVecEnv {
     pub fn reset_into(&mut self, obs: &mut [u8]) -> Result<(), StateLoadError> {
         let config = self.config;
         let obs_stride = config.obs_len_per_env();
-        self.synced_lanes = true;
-        if config.num_envs > 1 {
-            Self::reset_env(&mut self.envs[0], self.initial_state.as_deref())?;
+        self.reset_envs()?;
+        if self.synced_lanes && config.num_envs > 1 {
             write_reset_stack(
                 config,
                 &self.resize_plan,
@@ -150,19 +174,15 @@ impl MarioVecEnv {
 
         if config.num_envs >= PARALLEL_ENV_THRESHOLD {
             let resize_plan = &self.resize_plan;
-            let initial_state = self.initial_state.as_deref();
             self.envs
                 .par_iter_mut()
                 .zip(self.scratch.par_iter_mut())
                 .zip(obs.par_chunks_mut(obs_stride))
-                .try_for_each(|((env, scratch), obs_chunk)| {
-                    Self::reset_env(env, initial_state)?;
+                .for_each(|((env, scratch), obs_chunk)| {
                     write_reset_stack(config, resize_plan, env, scratch, obs_chunk);
-                    Ok::<(), StateLoadError>(())
-                })?;
+                });
         } else {
             for env_idx in 0..config.num_envs {
-                Self::reset_env(&mut self.envs[env_idx], self.initial_state.as_deref())?;
                 let start = env_idx * obs_stride;
                 let end = start + obs_stride;
                 write_reset_stack(
@@ -175,6 +195,21 @@ impl MarioVecEnv {
             }
         }
         Ok(())
+    }
+
+    pub fn initial_state_names(&self) -> Vec<String> {
+        self.initial_states
+            .iter()
+            .map(|state| state.name.clone())
+            .collect()
+    }
+
+    pub fn active_state_indices(&self) -> &[i32] {
+        &self.active_state_indices
+    }
+
+    pub fn seed(&mut self, seed: u64) {
+        self.rng = XorShift64::new(seed);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -408,7 +443,61 @@ impl MarioVecEnv {
         for lane in self.envs.iter_mut().skip(1) {
             *lane = env.clone();
         }
+        let active_state_index = self.active_state_indices[0];
+        self.active_state_indices.fill(active_state_index);
         self.synced_lanes = false;
+    }
+}
+
+#[derive(Clone)]
+pub struct InitialState {
+    name: String,
+    data: Vec<u8>,
+    cumulative_weight: f64,
+}
+
+impl InitialState {
+    pub fn new(name: String, data: Vec<u8>, cumulative_weight: f64) -> Self {
+        Self {
+            name,
+            data,
+            cumulative_weight,
+        }
+    }
+}
+
+struct XorShift64 {
+    state: u64,
+}
+
+impl XorShift64 {
+    fn new(seed: u64) -> Self {
+        let state = if seed == 0 {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_nanos() as u64)
+                .unwrap_or(0x9e37_79b9_7f4a_7c15)
+                ^ 0x9e37_79b9_7f4a_7c15
+        } else {
+            seed
+        };
+        Self {
+            state: state.max(1),
+        }
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        let mut value = self.state;
+        value ^= value << 13;
+        value ^= value >> 7;
+        value ^= value << 17;
+        self.state = value;
+        value
+    }
+
+    fn next_unit_f64(&mut self) -> f64 {
+        const DENOM: f64 = (1u64 << 53) as f64;
+        ((self.next_u64() >> 11) as f64) / DENOM
     }
 }
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 import gzip
 import os
 from pathlib import Path
@@ -32,6 +32,7 @@ INFO_KEYS = (
     "xscrollHi",
     "xscrollLo",
 )
+StateSpec = str | Path | bytes | bytearray | memoryview
 
 
 def _expand_rom_path(path: str | Path) -> str:
@@ -117,11 +118,9 @@ def _resolve_state_path(state: str | Path, state_dir: str | Path | None = None) 
 
 
 def _load_initial_state(
-    state: str | Path | bytes | bytearray | memoryview | None,
+    state: StateSpec,
     state_dir: str | Path | None = None,
-) -> bytes | None:
-    if state is None:
-        return None
+) -> bytes:
     if isinstance(state, (bytes, bytearray, memoryview)):
         raw = bytes(state)
     else:
@@ -129,6 +128,54 @@ def _load_initial_state(
     if raw.startswith(GZIP_MAGIC):
         return gzip.decompress(raw)
     return raw
+
+
+def _state_label(state: StateSpec, fallback: str) -> str:
+    if isinstance(state, (bytes, bytearray, memoryview)):
+        return fallback
+    return str(state)
+
+
+def _normalize_initial_state_config(
+    state: StateSpec | Sequence[StateSpec] | Mapping[StateSpec, float] | None,
+    state_dir: str | Path | None,
+    num_envs: int,
+) -> tuple[list[bytes], tuple[str, ...], list[float] | None]:
+    if state is None:
+        return [], (), None
+
+    if isinstance(state, Mapping):
+        if not state:
+            raise ValueError("weighted state mapping must contain at least one state")
+        initial_states: list[bytes] = []
+        state_names: list[str] = []
+        state_weights: list[float] = []
+        for index, (state_value, weight_value) in enumerate(state.items()):
+            weight = float(weight_value)
+            if not np.isfinite(weight) or weight <= 0.0:
+                raise ValueError("weighted state values must be positive finite numbers")
+            initial_states.append(_load_initial_state(state_value, state_dir))
+            state_names.append(_state_label(state_value, f"state-{index}"))
+            state_weights.append(weight)
+        total_weight = float(np.sum(state_weights))
+        return initial_states, tuple(state_names), [weight / total_weight for weight in state_weights]
+
+    if isinstance(state, Sequence) and not isinstance(state, (str, bytes, bytearray, memoryview)):
+        states = list(state)
+        if len(states) != num_envs:
+            raise ValueError(
+                "state sequences must provide exactly one state per env slot: "
+                f"got {len(states)} states for num_envs={num_envs}"
+            )
+        if not states:
+            raise ValueError("state sequence must contain at least one state")
+        return (
+            [_load_initial_state(state_value, state_dir) for state_value in states],
+            tuple(_state_label(state_value, f"state-{index}") for index, state_value in enumerate(states)),
+            None,
+        )
+
+    return [_load_initial_state(state, state_dir)], (_state_label(state, "state-0"),), None
 
 
 def _resolve_action_set(action_set: str | Sequence[str]) -> tuple[str, ...]:
@@ -178,15 +225,19 @@ class SuperMarioBrosVecEnv:
         crop_bottom: int = 0,
         resize_width: int = 84,
         resize_height: int = 84,
-        state: str | Path | bytes | bytearray | memoryview | None = None,
+        state: StateSpec | Sequence[StateSpec] | Mapping[StateSpec, float] | None = None,
         state_dir: str | Path | None = None,
         action_set: str | Sequence[str] = "simple",
+        seed: int | None = None,
     ) -> None:
         self.action_meanings = _resolve_action_set(action_set)
         self.action_set = action_set if isinstance(action_set, str) else "custom"
         self._core_action_ids = _core_action_ids(self.action_meanings)
-        initial_state = _load_initial_state(state, state_dir)
-        self._has_initial_state = initial_state is not None
+        initial_states, initial_state_names, initial_state_weights = _normalize_initial_state_config(
+            state,
+            state_dir,
+            num_envs,
+        )
         self._core = FastMarioVecEnv(
             _expand_rom_path(rom_path),
             num_envs,
@@ -198,8 +249,12 @@ class SuperMarioBrosVecEnv:
             crop_bottom,
             resize_width,
             resize_height,
-            initial_state,
+            initial_states,
+            list(initial_state_names),
+            initial_state_weights,
+            0 if seed is None else int(seed),
         )
+        self.initial_state_names = tuple(self._core.initial_state_names)
         self.num_envs = self._core.num_envs
         self.frame_skip = self._core.frame_skip
         self.grayscale = self._core.grayscale
@@ -233,14 +288,22 @@ class SuperMarioBrosVecEnv:
         self._time = np.empty((self.num_envs,), dtype=np.uint16)
         self._xscroll_hi = np.empty((self.num_envs,), dtype=np.uint8)
         self._xscroll_lo = np.empty((self.num_envs,), dtype=np.uint8)
+        self._active_state_indices = np.empty((self.num_envs,), dtype=np.int32)
+        self._write_active_state_indices()
 
     def reset(self) -> np.ndarray:
         self._core.reset_into(self._obs)
         self._rewards.fill(0)
         self._terminated.fill(False)
         self._truncated.fill(False)
+        self._write_active_state_indices()
         self._write_info_arrays()
         return self._obs
+
+    def seed(self, seed: int | None = None) -> list[int | None]:
+        if seed is not None:
+            self._core.seed(int(seed))
+        return [seed]
 
     def step_async(self, actions: np.ndarray) -> None:
         actions_arr = np.asarray(actions, dtype=np.uint8)
@@ -303,6 +366,12 @@ class SuperMarioBrosVecEnv:
             self._xscroll_lo,
         )
 
+    def _write_active_state_indices(self) -> None:
+        self._active_state_indices[:] = np.asarray(
+            self._core.active_state_indices(),
+            dtype=np.int32,
+        )
+
     def _info_dict(self, index: int) -> dict[str, Any]:
         return {
             "x_pos": int(self._x_pos[index]),
@@ -356,6 +425,18 @@ class SuperMarioBrosVecEnv:
     @property
     def xscroll_lo(self) -> np.ndarray:
         return self._xscroll_lo
+
+    def active_state_indices(self) -> np.ndarray:
+        view = self._active_state_indices.view()
+        view.setflags(write=False)
+        return view
+
+    def active_states(self) -> tuple[str | None, ...]:
+        names = self.initial_state_names
+        return tuple(
+            None if int(index) < 0 else names[int(index)]
+            for index in self._active_state_indices
+        )
 
     def close(self) -> None:
         pass

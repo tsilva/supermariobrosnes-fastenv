@@ -59,6 +59,20 @@ obs, rewards, terminated, truncated, infos = env.step_wait()
 
 `step_wait()` calls the Rust `FastMarioVecEnv` once for the whole batch and fills reusable NumPy arrays in place. Use `step_fast()` when you do not need per-env `info` dictionaries.
 
+Initial states can be a single stable-retro state, one state per env slot, or a weighted mapping sampled independently for each lane on reset:
+
+```python
+env = SuperMarioBrosVecEnv(
+    rom_path="~/Desktop/roms/NES/mapper-000-NROM/SuperMarioBros-Nes-v0.nes",
+    num_envs=16,
+    state={"Level1-1": 0.5, "Level1-4": 0.5},
+    seed=123,
+)
+
+obs = env.reset()
+sampled_states = env.active_states()
+```
+
 ## Commands
 
 ```bash
@@ -81,7 +95,7 @@ modal run scripts/modal_benchmark_sps.py --output-json artifacts/benchmarks/moda
 - The current emulator scope is SuperMarioBros-Nes mapper 0 NROM.
 - The Python package exposes `SuperMarioBrosVecEnv`, `ACTION_MEANINGS`, `CORE_ACTION_MEANINGS`, and `ACTION_SETS`.
 - The default `simple` action set matches the Stable Retro Mario training mapper: `noop`, `right`, `right_b`, `right_a`, `right_a_b`, `a`, and `left`. Use `action_set="full"` when a tool needs the `start` button.
-- Use `--state Level1-1` or another stable-retro state to start from a saved level state. If needed, pass `--state-dir` or set `SUPERMARIOBROSNES_FASTENV_STATE_DIR`.
+- Use `--state Level1-1` or another stable-retro state to start from a saved level state. In Python, `state=` accepts a single state name/path/bytes value, a sequence with exactly one state per env, or a weighted mapping such as `{"Level1-1": 0.5, "Level1-4": 0.5}`. After reset, `active_state_indices()` and `active_states()` report the sampled state for each lane. If needed, pass `--state-dir` or set `SUPERMARIOBROSNES_FASTENV_STATE_DIR`.
 - Benchmark JSON can be written with `scripts/benchmark_sps.py --output-json ...`.
 - The Modal benchmark path expects `modal` to be installed and authenticated outside this package. It sends the local ROM and state bytes to the remote container at run time and defaults to `Level1-1`, `Level1-2`, `Level1-3`, and `Level1-4`.
 - Play mode uses the native SDL2 library. If SDL2 is not installed or discoverable, `scripts/play.py` exits with an SDL backend error.

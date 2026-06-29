@@ -5,7 +5,7 @@ use pyo3::types::PyModule;
 
 use crate::cartridge::Cartridge;
 use crate::emulator::{NES_HEIGHT, NES_WIDTH};
-use crate::vec_env::{MarioVecEnv, VecEnvConfig};
+use crate::vec_env::{InitialState, MarioVecEnv, VecEnvConfig};
 
 #[pyclass]
 pub struct FastMarioVecEnv {
@@ -15,7 +15,7 @@ pub struct FastMarioVecEnv {
 #[pymethods]
 impl FastMarioVecEnv {
     #[new]
-    #[pyo3(signature = (rom_path, num_envs, frame_skip=4, grayscale=true, frame_stack=4, terminate_on_flag=true, crop_top=0, crop_bottom=0, resize_width=84, resize_height=84, initial_state=None))]
+    #[pyo3(signature = (rom_path, num_envs, frame_skip=4, grayscale=true, frame_stack=4, terminate_on_flag=true, crop_top=0, crop_bottom=0, resize_width=84, resize_height=84, initial_states=None, initial_state_names=None, initial_state_weights=None, seed=0))]
     pub fn new(
         rom_path: String,
         num_envs: usize,
@@ -27,7 +27,10 @@ impl FastMarioVecEnv {
         crop_bottom: usize,
         resize_width: usize,
         resize_height: usize,
-        initial_state: Option<Vec<u8>>,
+        initial_states: Option<Vec<Vec<u8>>>,
+        initial_state_names: Option<Vec<String>>,
+        initial_state_weights: Option<Vec<f64>>,
+        seed: u64,
     ) -> PyResult<Self> {
         if num_envs == 0 {
             return Err(PyValueError::new_err("num_envs must be > 0"));
@@ -52,6 +55,12 @@ impl FastMarioVecEnv {
 
         let cart = Cartridge::load_ines(rom_path)
             .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+        let (initial_states, weighted_initial_states) = build_initial_states(
+            initial_states.unwrap_or_default(),
+            initial_state_names.unwrap_or_default(),
+            initial_state_weights,
+            num_envs,
+        )?;
         let config = VecEnvConfig {
             num_envs,
             frame_skip,
@@ -64,7 +73,7 @@ impl FastMarioVecEnv {
             resize_height,
         };
         Ok(Self {
-            inner: MarioVecEnv::new(cart, config, initial_state)
+            inner: MarioVecEnv::new(cart, config, initial_states, weighted_initial_states, seed)
                 .map_err(|err| PyValueError::new_err(err.to_string()))?,
         })
     }
@@ -116,6 +125,19 @@ impl FastMarioVecEnv {
             self.inner.config().obs_height(),
             self.inner.config().obs_width(),
         )
+    }
+
+    #[getter]
+    pub fn initial_state_names(&self) -> Vec<String> {
+        self.inner.initial_state_names()
+    }
+
+    pub fn active_state_indices(&self) -> Vec<i32> {
+        self.inner.active_state_indices().to_vec()
+    }
+
+    pub fn seed(&mut self, seed: u64) {
+        self.inner.seed(seed);
     }
 
     pub fn reset_into<'py>(
@@ -356,6 +378,91 @@ impl FastMarioVecEnv {
         }
         Ok(())
     }
+}
+
+fn build_initial_states(
+    state_data: Vec<Vec<u8>>,
+    state_names: Vec<String>,
+    state_weights: Option<Vec<f64>>,
+    num_envs: usize,
+) -> PyResult<(Vec<InitialState>, bool)> {
+    if state_data.is_empty() {
+        if !state_names.is_empty() {
+            return Err(PyValueError::new_err(
+                "initial_state_names requires initial_states",
+            ));
+        }
+        if state_weights.is_some() {
+            return Err(PyValueError::new_err(
+                "initial_state_weights requires initial_states",
+            ));
+        }
+        return Ok((Vec::new(), false));
+    }
+    if state_data.iter().any(Vec::is_empty) {
+        return Err(PyValueError::new_err(
+            "initial_states entries must not be empty",
+        ));
+    }
+    if !state_names.is_empty() && state_names.len() != state_data.len() {
+        return Err(PyValueError::new_err(
+            "initial_state_names length must match initial_states length",
+        ));
+    }
+
+    let names = if state_names.is_empty() {
+        (0..state_data.len())
+            .map(|idx| format!("state-{idx}"))
+            .collect::<Vec<_>>()
+    } else {
+        state_names
+    };
+
+    if let Some(weights) = state_weights {
+        if weights.len() != state_data.len() {
+            return Err(PyValueError::new_err(
+                "initial_state_weights length must match initial_states length",
+            ));
+        }
+        let total = weights.iter().try_fold(0.0, |acc, weight| {
+            if !weight.is_finite() || *weight <= 0.0 {
+                Err(PyValueError::new_err(
+                    "initial_state_weights must contain positive finite values",
+                ))
+            } else {
+                Ok(acc + *weight)
+            }
+        })?;
+        if !total.is_finite() || total <= 0.0 {
+            return Err(PyValueError::new_err(
+                "initial_state_weights must sum to a positive finite value",
+            ));
+        }
+
+        let mut cumulative = 0.0;
+        let mut states = Vec::with_capacity(state_data.len());
+        for ((name, data), weight) in names.into_iter().zip(state_data).zip(weights) {
+            cumulative += weight / total;
+            states.push(InitialState::new(name, data, cumulative.min(1.0)));
+        }
+        return Ok((states, true));
+    }
+
+    if state_data.len() != 1 && state_data.len() != num_envs {
+        return Err(PyValueError::new_err(format!(
+            "initial_states length must be 1 or num_envs when weights are not provided: got {} for num_envs={num_envs}",
+            state_data.len(),
+        )));
+    }
+
+    Ok((
+        names
+            .into_iter()
+            .zip(state_data)
+            .map(|(name, data)| InitialState::new(name, data, 0.0))
+            .collect(),
+        false,
+    ))
 }
 
 #[pymodule]
