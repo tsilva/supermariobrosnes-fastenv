@@ -76,8 +76,8 @@ def sandbox_level1_1_config(
         resize_width=84,
         resize_height=84,
         action_set="simple",
-        maxpool_last_two=False,
-        copy_observations=False,
+        frame_maxpool=False,
+        obs_copy="safe_view",
         terminate_on_flag=False,
         terminate_on_life_loss=True,
         terminate_on_level_change=True,
@@ -98,6 +98,48 @@ def run_oracle(config: compare.ComparisonConfig) -> dict:
     assert result["status"] == "ok"
     assert result["compared_steps"] == config.steps
     return result
+
+
+@pytest.mark.retro_oracle
+def test_stable_retro_vec_env_constructs_with_new_keyword_surface() -> None:
+    require_stable_retro_oracle()
+    import stable_retro
+
+    rom_path = compare.DEFAULT_ROM.expanduser()
+    env = stable_retro.RetroVecEnv(
+        compare.DEFAULT_STABLE_RETRO_GAME,
+        state="Level1-1",
+        num_envs=1,
+        num_threads=1,
+        rom_path=str(rom_path),
+        render_mode="rgb_array",
+        use_restricted_actions=stable_retro.Actions.ALL,
+        obs_crop=(32, 0, 0, 0),
+        obs_resize=(84, 84),
+        obs_grayscale=True,
+        obs_resize_algorithm="area",
+        obs_layout="chw",
+        obs_copy="safe_view",
+        frame_skip=4,
+        frame_stack=4,
+        frame_maxpool=False,
+        reset_noops=0,
+        action_sticky_prob=0.0,
+        reward_clip=False,
+        info_filter={
+            "mode": "terminal",
+            "keys": ("lives", "levelHi", "levelLo"),
+        },
+        done_on={
+            "life_loss": ("lives", "decrease"),
+            "level_change": (("levelHi", "levelLo"), "change"),
+        },
+    )
+    try:
+        assert env.num_envs == 1
+        assert getattr(env, "obs_copy", None) == "safe_view"
+    finally:
+        env.close()
 
 
 @pytest.mark.retro_oracle

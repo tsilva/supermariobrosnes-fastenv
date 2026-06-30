@@ -263,11 +263,11 @@ class SdlPolicyPlayer:
         obs_resize = None
         if self.args.resize_width != 240 or self.args.resize_height != source_height:
             obs_resize = (self.args.resize_height, self.args.resize_width)
-        done_on_info = {}
+        done_on = {}
         if self.args.terminate_on_life_loss:
-            done_on_info["life_loss"] = ("lives", "decrease")
+            done_on["life_loss"] = ("lives", "decrease")
         if self.args.terminate_on_level_change:
-            done_on_info["level_change"] = (("levelHi", "levelLo"), "change")
+            done_on["level_change"] = (("levelHi", "levelLo"), "change")
         env = stable_retro.RetroVecEnv(
             self.args.game,
             state=self.args.state,
@@ -282,14 +282,14 @@ class SdlPolicyPlayer:
             obs_resize_algorithm="area",
             frame_skip=self.args.frame_skip,
             frame_stack=self.args.frame_stack,
-            maxpool_last_two=self.args.max_pool_frames,
-            noop_reset_max=0,
-            sticky_action_prob=0.0,
+            frame_maxpool=self.args.max_pool_frames,
+            reset_noops=0,
+            action_sticky_prob=0.0,
             reward_clip=False,
-            info_mode="all",
+            info_filter="all",
             obs_layout="chw",
-            copy_observations=False,
-            done_on_info=done_on_info or None,
+            obs_copy="safe_view",
+            done_on=done_on or None,
         )
         if hasattr(env, "seed"):
             env.seed(self.args.seed)
@@ -319,11 +319,11 @@ class SdlPolicyPlayer:
 
         import stable_retro
 
-        done_on_info = {}
+        done_on = {}
         if self.args.terminate_on_life_loss:
-            done_on_info["life_loss"] = ("lives", "decrease")
+            done_on["life_loss"] = ("lives", "decrease")
         if self.args.terminate_on_level_change:
-            done_on_info["level_change"] = (("levelHi", "levelLo"), "change")
+            done_on["level_change"] = (("levelHi", "levelLo"), "change")
         env = stable_retro.RetroVecEnv(
             self.args.game,
             state=self.args.state,
@@ -338,14 +338,14 @@ class SdlPolicyPlayer:
             obs_resize_algorithm="area",
             frame_skip=self.args.frame_skip,
             frame_stack=1,
-            maxpool_last_two=False,
-            noop_reset_max=0,
-            sticky_action_prob=0.0,
+            frame_maxpool=False,
+            reset_noops=0,
+            action_sticky_prob=0.0,
             reward_clip=False,
-            info_mode="all",
+            info_filter="all",
             obs_layout="chw",
-            copy_observations=False,
-            done_on_info=done_on_info or None,
+            obs_copy="safe_view",
+            done_on=done_on or None,
         )
         if hasattr(env, "seed"):
             env.seed(self.args.seed)

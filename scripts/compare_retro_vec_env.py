@@ -17,7 +17,7 @@ from supermariobrosnes_turbo.env import DEFAULT_STABLE_RETRO_GAME
 
 
 DEFAULT_ROM = Path("~/Desktop/roms/NES/mapper-000-NROM/SuperMarioBros-Nes-v0.nes")
-EXPECTED_STABLE_RETRO_VERSION = "1.0.0.post22"
+EXPECTED_STABLE_RETRO_VERSION = "1.0.0.post23"
 STABLE_VISIBLE_WIDTH = 240
 STABLE_VISIBLE_HEIGHT = 224
 INFO_KEY_MAP = {
@@ -34,7 +34,7 @@ INFO_KEY_MAP = {
 SANDBOX_SB3_LEVEL1_1_ENVIRONMENT_HASH = (
     "sha256:f5000bb13abcc81d000892b6b0d5ebb7fb101f729859af9ec8ca524a5b2b02f8"
 )
-SANDBOX_SB3_LEVEL1_1_DONE_ON_INFO = {
+SANDBOX_SB3_LEVEL1_1_DONE_ON = {
     "life_loss": ("lives", "decrease"),
     "level_change": (("levelHi", "levelLo"), "change"),
 }
@@ -68,8 +68,8 @@ class ComparisonConfig:
     resize_width: int
     resize_height: int
     action_set: str
-    maxpool_last_two: bool
-    copy_observations: bool
+    frame_maxpool: bool
+    obs_copy: str
     terminate_on_flag: bool
     terminate_on_life_loss: bool
     terminate_on_level_change: bool
@@ -128,16 +128,17 @@ def parse_args() -> ComparisonConfig:
     parser.add_argument("--resize-height", type=int, default=84)
     parser.add_argument("--action-set", choices=sorted(ACTION_SETS), default="simple")
     parser.add_argument(
-        "--maxpool-last-two",
+        "--frame-maxpool",
         action="store_true",
         help=(
             "Enable RetroVecEnv maxpooling. sandbox-sb3 Level1-1 training leaves this disabled."
         ),
     )
     parser.add_argument(
-        "--copy-observations",
-        action="store_true",
-        help="Enable RetroVecEnv observation copies. sandbox-sb3 Level1-1 training disables this.",
+        "--obs-copy",
+        choices=("copy", "safe_view", "unsafe_view"),
+        default="safe_view",
+        help="RetroVecEnv observation ownership mode. sandbox-sb3 Level1-1 training uses safe_view.",
     )
     parser.add_argument(
         "--terminate-on-flag",
@@ -149,14 +150,14 @@ def parse_args() -> ComparisonConfig:
         dest="terminate_on_life_loss",
         action="store_false",
         default=True,
-        help="Disable the fast-env equivalent of sandbox-sb3's life_loss done_on_info rule.",
+        help="Disable the fast-env equivalent of sandbox-sb3's life_loss done_on rule.",
     )
     parser.add_argument(
         "--no-terminate-on-level-change",
         dest="terminate_on_level_change",
         action="store_false",
         default=True,
-        help="Disable the fast-env equivalent of sandbox-sb3's level_change done_on_info rule.",
+        help="Disable the fast-env equivalent of sandbox-sb3's level_change done_on rule.",
     )
     parser.add_argument("--skip-obs", action="store_true")
     parser.add_argument("--skip-rewards", action="store_true")
@@ -222,8 +223,8 @@ def parse_args() -> ComparisonConfig:
         resize_width=args.resize_width,
         resize_height=args.resize_height,
         action_set=args.action_set,
-        maxpool_last_two=args.maxpool_last_two,
-        copy_observations=args.copy_observations,
+        frame_maxpool=args.frame_maxpool,
+        obs_copy=args.obs_copy,
         terminate_on_flag=args.terminate_on_flag,
         terminate_on_life_loss=args.terminate_on_life_loss,
         terminate_on_level_change=args.terminate_on_level_change,
@@ -257,7 +258,7 @@ def check_stable_retro_version(path: Path | None, allow_mismatch: bool) -> str:
         raise SystemExit(
             "Expected stable-retro-turbo=="
             f"{EXPECTED_STABLE_RETRO_VERSION}, found {version}. "
-            "Install post22 or pass --allow-version-mismatch for checkout diagnostics."
+            "Install post23 or pass --allow-version-mismatch for checkout diagnostics."
         )
     return version
 
@@ -361,15 +362,15 @@ def make_retro_env(config: ComparisonConfig):
         "obs_resize_algorithm": "area",
         "frame_skip": config.frame_skip,
         "frame_stack": config.frame_stack,
-        "maxpool_last_two": config.maxpool_last_two,
-        "noop_reset_max": 0,
-        "sticky_action_prob": 0.0,
+        "frame_maxpool": config.frame_maxpool,
+        "reset_noops": 0,
+        "action_sticky_prob": 0.0,
         "reward_clip": False,
-        "info_mode": "all",
+        "info_filter": "all",
         "obs_layout": "chw",
-        "copy_observations": config.copy_observations,
+        "obs_copy": config.obs_copy,
     }
-    kwargs["done_on_info"] = SANDBOX_SB3_LEVEL1_1_DONE_ON_INFO
+    kwargs["done_on"] = SANDBOX_SB3_LEVEL1_1_DONE_ON
     env = retro.RetroVecEnv(config.game, **kwargs)
     if hasattr(env, "seed"):
         env.seed(config.seed)
@@ -727,8 +728,8 @@ def config_json(config: ComparisonConfig) -> dict[str, Any]:
         "resize_width": config.resize_width,
         "resize_height": config.resize_height,
         "action_set": config.action_set,
-        "maxpool_last_two": config.maxpool_last_two,
-        "copy_observations": config.copy_observations,
+        "frame_maxpool": config.frame_maxpool,
+        "obs_copy": config.obs_copy,
         "terminate_on_flag": config.terminate_on_flag,
         "terminate_on_life_loss": config.terminate_on_life_loss,
         "terminate_on_level_change": config.terminate_on_level_change,
@@ -740,16 +741,18 @@ def config_json(config: ComparisonConfig) -> dict[str, Any]:
             "env_threads": 4,
             "frame_skip": 4,
             "frame_stack": 4,
-            "maxpool_last_two": False,
-            "copy_observations": False,
+            "frame_maxpool": False,
+            "obs_copy": "safe_view",
             "obs_crop": [32, 0, 0, 0],
             "obs_grayscale": True,
             "obs_resize": [84, 84],
             "obs_resize_algorithm": "area",
             "obs_layout": "chw",
-            "sticky_action_prob": 0.0,
+            "reset_noops": 0,
+            "action_sticky_prob": 0.0,
             "action_set": "simple",
-            "done_on_info": {
+            "info_filter": "all",
+            "done_on": {
                 "life_loss": ["lives", "decrease"],
                 "level_change": [["levelHi", "levelLo"], "change"],
             },

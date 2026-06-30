@@ -20,7 +20,7 @@ dev = [
   "maturin>=1.7,<2",
   "pytest>=8",
   "stable-baselines3>=2.7.1",
-  "stable-retro-turbo==1.0.0.post22; python_version == '3.14'",
+  "stable-retro-turbo==1.0.0.post23; python_version == '3.14'",
 ]
 
 [tool.maturin]
@@ -30,7 +30,7 @@ features = ["pyo3/extension-module"]
 
 [tool.uv]
 exclude-newer = "7 days"
-exclude-newer-package = { "stable-retro-turbo" = "2026-06-30T00:00:00Z" }
+exclude-newer-package = { "stable-retro-turbo" = "2026-07-01T00:00:00Z" }
 constraint-dependencies = [
   "mistralai!=2.4.6",
   "guardrails-ai!=0.10.1",
