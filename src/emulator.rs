@@ -270,6 +270,11 @@ impl Ppu {
     }
 
     #[inline]
+    fn cycles_until_next_event(&self) -> usize {
+        next_ppu_event_dot(self.dot()) - self.dot()
+    }
+
+    #[inline]
     fn set_dot(&mut self, dot: usize) {
         self.frame_dot = dot;
     }
@@ -1643,15 +1648,28 @@ impl NesEmulator {
     fn run_frame(&mut self, buttons: u8) {
         self.controller_state = buttons;
         let mut cpu_cycle_guard = 0usize;
+        let mut pending_ppu_cycles = 0usize;
         loop {
             if self.ppu.take_nmi() {
                 self.interrupt(0xfffa, false);
             }
             let cycles = self.cpu_step() as usize;
             cpu_cycle_guard += cycles;
-            if self.ppu.tick(cycles * 3) || cpu_cycle_guard >= CPU_CYCLES_PER_FRAME_GUARD {
-                break;
+            pending_ppu_cycles += cycles * 3;
+            let must_flush_ppu = pending_ppu_cycles >= self.ppu.cycles_until_next_event()
+                || cpu_cycle_guard >= CPU_CYCLES_PER_FRAME_GUARD;
+            if must_flush_ppu {
+                if self.ppu.tick(pending_ppu_cycles)
+                    || cpu_cycle_guard >= CPU_CYCLES_PER_FRAME_GUARD
+                {
+                    pending_ppu_cycles = 0;
+                    break;
+                }
+                pending_ppu_cycles = 0;
             }
+        }
+        if pending_ppu_cycles > 0 {
+            self.ppu.tick(pending_ppu_cycles);
         }
     }
 
