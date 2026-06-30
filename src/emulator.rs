@@ -26,6 +26,8 @@ const DEFAULT_GRAY_CROP_HEIGHT: usize = VISIBLE_FRAME_HEIGHT - DEFAULT_GRAY_CROP
 const DEFAULT_GRAY_RESIZE_WIDTH: usize = 84;
 const DEFAULT_GRAY_RESIZE_HEIGHT: usize = 84;
 const DEFAULT_GRAY_RESIZE_PIXELS: usize = DEFAULT_GRAY_RESIZE_WIDTH * DEFAULT_GRAY_RESIZE_HEIGHT;
+const SMB_IDLE_JMP_PC: u16 = 0x8057;
+const SMB_IDLE_JMP_PPU_CYCLES: usize = 9;
 
 const FLAG_C: u8 = 0x01;
 const FLAG_Z: u8 = 0x02;
@@ -1347,6 +1349,13 @@ fn next_ppu_event_dot(current: usize) -> usize {
     }
 }
 
+fn prg_rom_supports_smb_idle_jmp(prg_rom: &[u8], mask: usize) -> bool {
+    let offset = (SMB_IDLE_JMP_PC as usize).wrapping_sub(0x8000) & mask;
+    prg_rom.get(offset) == Some(&0x4c)
+        && prg_rom.get((offset + 1) & mask) == Some(&((SMB_IDLE_JMP_PC & 0xff) as u8))
+        && prg_rom.get((offset + 2) & mask) == Some(&((SMB_IDLE_JMP_PC >> 8) as u8))
+}
+
 fn required_field<'a>(
     state: &'a [u8],
     name: &'static [u8; 4],
@@ -1401,6 +1410,7 @@ pub struct NesEmulator {
     ram: [u8; 2048],
     prg_rom: Vec<u8>,
     prg_addr_mask: usize,
+    smb_idle_jmp_supported: bool,
     controller_state: u8,
     controller_shift: u8,
     controller_strobe: bool,
@@ -1422,6 +1432,7 @@ pub struct NesEmulator {
 impl NesEmulator {
     pub fn new_with_options(cart: Cartridge, terminate_on_flag: bool) -> Self {
         let prg_addr_mask = cart.prg_rom.len() - 1;
+        let smb_idle_jmp_supported = prg_rom_supports_smb_idle_jmp(&cart.prg_rom, prg_addr_mask);
         let ppu = Ppu::new(cart.chr_rom, cart.vertical_mirroring);
         let mut emu = Self {
             cpu: Cpu::new(),
@@ -1429,6 +1440,7 @@ impl NesEmulator {
             ram: [0; 2048],
             prg_rom: cart.prg_rom,
             prg_addr_mask,
+            smb_idle_jmp_supported,
             controller_state: 0,
             controller_shift: 0,
             controller_strobe: false,
@@ -1653,6 +1665,16 @@ impl NesEmulator {
             if self.ppu.take_nmi() {
                 self.interrupt(0xfffa, false);
             }
+            if self.try_fast_forward_idle_jmp(&mut cpu_cycle_guard, &mut pending_ppu_cycles) {
+                if self.ppu.tick(pending_ppu_cycles)
+                    || cpu_cycle_guard >= CPU_CYCLES_PER_FRAME_GUARD
+                {
+                    pending_ppu_cycles = 0;
+                    break;
+                }
+                pending_ppu_cycles = 0;
+                continue;
+            }
             let cycles = self.cpu_step() as usize;
             cpu_cycle_guard += cycles;
             pending_ppu_cycles += cycles * 3;
@@ -1671,6 +1693,25 @@ impl NesEmulator {
         if pending_ppu_cycles > 0 {
             self.ppu.tick(pending_ppu_cycles);
         }
+    }
+
+    #[inline]
+    fn try_fast_forward_idle_jmp(
+        &mut self,
+        cpu_cycle_guard: &mut usize,
+        pending_ppu_cycles: &mut usize,
+    ) -> bool {
+        if self.cpu.pc != SMB_IDLE_JMP_PC || !self.smb_idle_jmp_supported {
+            return false;
+        }
+
+        let ppu_cycles_until_event = self.ppu.cycles_until_next_event();
+        let remaining = ppu_cycles_until_event.saturating_sub(*pending_ppu_cycles);
+        let jumps = remaining.div_ceil(SMB_IDLE_JMP_PPU_CYCLES).max(1);
+        *cpu_cycle_guard += jumps * 3;
+        *pending_ppu_cycles += jumps * SMB_IDLE_JMP_PPU_CYCLES;
+        *pending_ppu_cycles >= ppu_cycles_until_event
+            || *cpu_cycle_guard >= CPU_CYCLES_PER_FRAME_GUARD
     }
 
     #[inline]
