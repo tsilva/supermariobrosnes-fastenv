@@ -17,7 +17,7 @@ pub struct FastMarioVecEnv {
 #[pymethods]
 impl FastMarioVecEnv {
     #[new]
-    #[pyo3(signature = (rom_path, num_envs, frame_skip=4, grayscale=true, frame_stack=4, terminate_on_flag=true, crop_top=0, crop_bottom=0, resize_width=84, resize_height=84, initial_states=None, initial_state_names=None, initial_state_weights=None, seed=0, terminate_on_life_loss=false, terminate_on_level_change=false, done_on_info=None))]
+    #[pyo3(signature = (rom_path, num_envs, frame_skip=4, grayscale=true, frame_stack=4, terminate_on_flag=true, crop_top=0, crop_bottom=0, resize_width=84, resize_height=84, initial_states=None, initial_state_names=None, initial_state_weights=None, seed=0, terminate_on_life_loss=false, terminate_on_level_change=false, done_on_info=None, frame_maxpool=false))]
     pub fn new(
         rom_path: String,
         num_envs: usize,
@@ -36,6 +36,7 @@ impl FastMarioVecEnv {
         terminate_on_life_loss: bool,
         terminate_on_level_change: bool,
         done_on_info: Option<Vec<(String, Vec<String>, String)>>,
+        frame_maxpool: bool,
     ) -> PyResult<Self> {
         if num_envs == 0 {
             return Err(PyValueError::new_err("num_envs must be > 0"));
@@ -76,6 +77,7 @@ impl FastMarioVecEnv {
             frame_skip,
             grayscale,
             frame_stack,
+            frame_maxpool,
             terminate_on_flag,
             crop_top,
             crop_bottom,
@@ -113,6 +115,11 @@ impl FastMarioVecEnv {
     #[getter]
     pub fn frame_stack(&self) -> usize {
         self.inner.config().frame_stack
+    }
+
+    #[getter]
+    pub fn frame_maxpool(&self) -> bool {
+        self.inner.config().frame_maxpool
     }
 
     #[getter]

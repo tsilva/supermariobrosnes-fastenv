@@ -326,6 +326,7 @@ def make_fast_env(config: ComparisonConfig) -> SuperMarioBrosVecEnv:
         frame_skip=config.frame_skip,
         grayscale=config.grayscale,
         frame_stack=config.frame_stack,
+        frame_maxpool=config.frame_maxpool,
         terminate_on_flag=config.terminate_on_flag,
         terminate_on_life_loss=config.terminate_on_life_loss,
         terminate_on_level_change=config.terminate_on_level_change,

@@ -268,6 +268,7 @@ class SuperMarioBrosVecEnv:
         frame_skip: int = 4,
         grayscale: bool = True,
         frame_stack: int = 4,
+        frame_maxpool: bool = False,
         terminate_on_flag: bool = True,
         crop_top: int = 0,
         crop_bottom: int = 0,
@@ -312,12 +313,14 @@ class SuperMarioBrosVecEnv:
             bool(terminate_on_life_loss),
             bool(terminate_on_level_change),
             [(name, list(keys), op) for name, keys, op in done_on_info_rules],
+            bool(frame_maxpool),
         )
         self.initial_state_names = tuple(self._core.initial_state_names)
         self.num_envs = self._core.num_envs
         self.frame_skip = self._core.frame_skip
         self.grayscale = self._core.grayscale
         self.frame_stack = self._core.frame_stack
+        self.frame_maxpool = self._core.frame_maxpool
         self.terminate_on_flag = terminate_on_flag
         self.terminate_on_life_loss = bool(terminate_on_life_loss)
         self.terminate_on_level_change = bool(terminate_on_level_change)

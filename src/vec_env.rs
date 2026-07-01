@@ -15,6 +15,7 @@ pub struct VecEnvConfig {
     pub frame_skip: usize,
     pub grayscale: bool,
     pub frame_stack: usize,
+    pub frame_maxpool: bool,
     pub terminate_on_flag: bool,
     pub crop_top: usize,
     pub crop_bottom: usize,
@@ -228,11 +229,7 @@ impl MarioVecEnv {
             config.resize_width,
             config.resize_height,
         );
-        let scratch_len = if config.needs_resize() {
-            native_frame_len(config)
-        } else {
-            0
-        };
+        let scratch_len = scratch_len(config);
         let envs = (0..config.num_envs)
             .map(|_| NesEmulator::new_with_options(cart.clone(), config.terminate_on_flag))
             .collect::<Vec<_>>();
@@ -1618,21 +1615,57 @@ fn step_one(
     let action = MarioAction::from_u8(action_id);
     let mut reward = 0.0;
     let mut done = false;
-    for _ in 0..config.frame_skip {
-        reward += env.step_frame(action);
-        let done_on_info = check_done_on_info(
-            env,
-            done_on_info_baseline,
-            done_on_info_rules,
-            fired_done_on_info,
-        );
-        done = env.is_done() || done_on_info;
-        if done {
-            break;
+    if config.frame_maxpool {
+        let source_len = rgb_source_frame_len(config);
+        let (frame_a, frame_b_rest) = scratch.split_at_mut(source_len);
+        let frame_b = &mut frame_b_rest[..source_len];
+        let mut recent_count = 0usize;
+        for _ in 0..config.frame_skip {
+            reward += env.step_frame(action);
+            let target = if recent_count % 2 == 0 {
+                &mut *frame_a
+            } else {
+                &mut *frame_b
+            };
+            write_rgb_source_frame(config, env, target);
+            recent_count += 1;
+            let done_on_info = check_done_on_info(
+                env,
+                done_on_info_baseline,
+                done_on_info_rules,
+                fired_done_on_info,
+            );
+            done = env.is_done() || done_on_info;
+            if done {
+                break;
+            }
         }
+        shift_stack_left(config, obs_chunk);
+        write_maxpooled_rgb_frame_to_last_stack_slot(
+            config,
+            resize_plan,
+            frame_a,
+            frame_b,
+            recent_count,
+            obs_chunk,
+        );
+    } else {
+        for _ in 0..config.frame_skip {
+            reward += env.step_frame(action);
+            let done_on_info = check_done_on_info(
+                env,
+                done_on_info_baseline,
+                done_on_info_rules,
+                fired_done_on_info,
+            );
+            done = env.is_done() || done_on_info;
+            if done {
+                break;
+            }
+        }
+        shift_stack_left(config, obs_chunk);
+        write_current_frame_to_last_stack_slot(config, resize_plan, env, scratch, obs_chunk);
     }
-    shift_stack_left(config, obs_chunk);
-    write_current_frame_to_last_stack_slot(config, resize_plan, env, scratch, obs_chunk);
 
     *reward_out = reward;
     *terminated_out = done;
@@ -1681,30 +1714,72 @@ fn step_one_profiled(
     let action = MarioAction::from_u8(action_id);
     let mut reward = 0.0;
     let mut done = false;
-    for _ in 0..config.frame_skip {
-        reward += env.step_frame_profiled(action, profiler);
-        let done_on_info = check_done_on_info(
-            env,
-            done_on_info_baseline,
-            done_on_info_rules,
-            fired_done_on_info,
-        );
-        done = env.is_done() || done_on_info;
-        if done {
-            break;
+    if config.frame_maxpool {
+        let source_len = rgb_source_frame_len(config);
+        let (frame_a, frame_b_rest) = scratch.split_at_mut(source_len);
+        let frame_b = &mut frame_b_rest[..source_len];
+        let mut recent_count = 0usize;
+        for _ in 0..config.frame_skip {
+            reward += env.step_frame_profiled(action, profiler);
+            let target = if recent_count % 2 == 0 {
+                &mut *frame_a
+            } else {
+                &mut *frame_b
+            };
+            let render_start = Instant::now();
+            write_rgb_source_frame(config, env, target);
+            profiler.record_render(render_start.elapsed());
+            recent_count += 1;
+            let done_on_info = check_done_on_info(
+                env,
+                done_on_info_baseline,
+                done_on_info_rules,
+                fired_done_on_info,
+            );
+            done = env.is_done() || done_on_info;
+            if done {
+                break;
+            }
         }
+        let shift_start = Instant::now();
+        shift_stack_left(config, obs_chunk);
+        profiler.record_stack_shift(shift_start.elapsed());
+        let resize_start = Instant::now();
+        write_maxpooled_rgb_frame_to_last_stack_slot(
+            config,
+            resize_plan,
+            frame_a,
+            frame_b,
+            recent_count,
+            obs_chunk,
+        );
+        profiler.record_resize(resize_start.elapsed());
+    } else {
+        for _ in 0..config.frame_skip {
+            reward += env.step_frame_profiled(action, profiler);
+            let done_on_info = check_done_on_info(
+                env,
+                done_on_info_baseline,
+                done_on_info_rules,
+                fired_done_on_info,
+            );
+            done = env.is_done() || done_on_info;
+            if done {
+                break;
+            }
+        }
+        let shift_start = Instant::now();
+        shift_stack_left(config, obs_chunk);
+        profiler.record_stack_shift(shift_start.elapsed());
+        write_current_frame_to_last_stack_slot_profiled(
+            config,
+            resize_plan,
+            env,
+            scratch,
+            obs_chunk,
+            profiler,
+        );
     }
-    let shift_start = Instant::now();
-    shift_stack_left(config, obs_chunk);
-    profiler.record_stack_shift(shift_start.elapsed());
-    write_current_frame_to_last_stack_slot_profiled(
-        config,
-        resize_plan,
-        env,
-        scratch,
-        obs_chunk,
-        profiler,
-    );
 
     *reward_out = reward;
     *terminated_out = done;
@@ -1842,6 +1917,36 @@ fn write_current_frame_to_last_stack_slot_profiled(
     );
 }
 
+fn write_maxpooled_rgb_frame_to_last_stack_slot(
+    config: VecEnvConfig,
+    resize_plan: &AreaResizePlan,
+    frame_a: &mut [u8],
+    frame_b: &[u8],
+    recent_count: usize,
+    obs_chunk: &mut [u8],
+) {
+    let frame_len = frame_len(config);
+    let dst_start = (config.frame_stack - 1) * frame_len;
+    let dst = &mut obs_chunk[dst_start..dst_start + frame_len];
+    if recent_count == 0 {
+        return;
+    }
+    if recent_count == 1 {
+        let src = if recent_count % 2 == 1 {
+            &frame_a[..]
+        } else {
+            frame_b
+        };
+        process_rgb_source_frame(config, resize_plan, src, dst);
+        return;
+    }
+    let source_len = rgb_source_frame_len(config);
+    for idx in 0..source_len {
+        frame_a[idx] = frame_a[idx].max(frame_b[idx]);
+    }
+    process_rgb_source_frame(config, resize_plan, &frame_a[..source_len], dst);
+}
+
 fn write_current_frame(
     config: VecEnvConfig,
     resize_plan: &AreaResizePlan,
@@ -1904,6 +2009,29 @@ fn write_native_frame(config: VecEnvConfig, env: &NesEmulator, dst: &mut [u8]) {
     }
 }
 
+fn write_rgb_source_frame(config: VecEnvConfig, env: &NesEmulator, dst: &mut [u8]) {
+    env.write_rgb_visible_frame_cropped(dst, config.crop_top, config.source_height());
+}
+
+fn process_rgb_source_frame(
+    config: VecEnvConfig,
+    plan: &AreaResizePlan,
+    src: &[u8],
+    dst: &mut [u8],
+) {
+    if config.grayscale {
+        if config.needs_resize() {
+            resize_gray_from_rgb_source(src, dst, plan);
+        } else {
+            gray_from_rgb_source(src, dst);
+        }
+    } else if config.needs_resize() {
+        resize_frame_area(config, plan, src, dst);
+    } else {
+        dst.copy_from_slice(&src[..frame_len(config)]);
+    }
+}
+
 #[inline]
 fn frame_len(config: VecEnvConfig) -> usize {
     if config.grayscale {
@@ -1922,6 +2050,29 @@ fn native_frame_len(config: VecEnvConfig) -> usize {
     }
 }
 
+#[inline]
+fn rgb_source_frame_len(config: VecEnvConfig) -> usize {
+    config.source_width() * config.source_height() * RGB_CHANNELS
+}
+
+#[inline]
+fn native_scratch_len(config: VecEnvConfig) -> usize {
+    if config.needs_resize() {
+        native_frame_len(config)
+    } else {
+        0
+    }
+}
+
+#[inline]
+fn scratch_len(config: VecEnvConfig) -> usize {
+    if config.frame_maxpool {
+        2 * rgb_source_frame_len(config)
+    } else {
+        native_scratch_len(config)
+    }
+}
+
 fn resize_frame_area(config: VecEnvConfig, plan: &AreaResizePlan, src: &[u8], dst: &mut [u8]) {
     if config.grayscale {
         resize_plane_area(src, dst, plan, 0, 0);
@@ -1932,6 +2083,33 @@ fn resize_frame_area(config: VecEnvConfig, plan: &AreaResizePlan, src: &[u8], ds
             resize_plane_area(src, dst, plan, channel * src_plane, channel * dst_plane);
         }
     }
+}
+
+fn gray_from_rgb_source(src: &[u8], dst: &mut [u8]) {
+    let plane = dst.len();
+    for idx in 0..plane {
+        dst[idx] = rgb_to_gray(src[idx], src[plane + idx], src[2 * plane + idx]);
+    }
+}
+
+fn resize_gray_from_rgb_source(src: &[u8], dst: &mut [u8], plan: &AreaResizePlan) {
+    let src_plane = plan.src_width * plan.src_height;
+    for (dst_idx, bin) in plan.bins.iter().enumerate() {
+        let mut sum = 0u32;
+        for sy in bin.y0..bin.y1 {
+            let src_row = sy * plan.src_width;
+            for sx in bin.x0..bin.x1 {
+                let idx = src_row + sx;
+                sum += rgb_to_gray(src[idx], src[src_plane + idx], src[2 * src_plane + idx]) as u32;
+            }
+        }
+        dst[dst_idx] = (sum / bin.count) as u8;
+    }
+}
+
+#[inline]
+fn rgb_to_gray(r: u8, g: u8, b: u8) -> u8 {
+    (((r as u32) * 77 + (g as u32) * 150 + (b as u32) * 29 + 128) >> 8) as u8
 }
 
 fn resize_plane_area(
@@ -2042,6 +2220,7 @@ mod tests {
             frame_skip: 4,
             grayscale: true,
             frame_stack: 4,
+            frame_maxpool: false,
             terminate_on_flag: true,
             crop_top: 32,
             crop_bottom: 0,
@@ -2082,6 +2261,7 @@ mod tests {
             frame_skip: 4,
             grayscale: false,
             frame_stack: 1,
+            frame_maxpool: false,
             terminate_on_flag: true,
             crop_top: 32,
             crop_bottom: 0,
