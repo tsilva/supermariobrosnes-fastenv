@@ -21,6 +21,10 @@ preprocessing contract: frame skip, grayscale, and frame stacking.
   flags, `x_pos`, and `lives` are copied to the other identical lanes. If an
   action vector diverges, the shared state is cloned into independent lanes
   before the mixed action step runs.
+- Repeated saved-state groups may use the same deterministic sharing rule per
+  group. Mixed-level benchmark lanes still receive fully materialized
+  observations and scalar info; if any action diverges inside a repeated-state
+  group, the group is materialized before stepping.
 - The default cropped grayscale renderer uses SMB/NES tile structure directly:
   background pixels are emitted in 8-pixel tile-row runs, then the existing
   sprite overlay path applies priority and palette semantics.

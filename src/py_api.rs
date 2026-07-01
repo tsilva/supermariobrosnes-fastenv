@@ -180,6 +180,25 @@ impl FastMarioVecEnv {
         self.inner.seed(seed);
     }
 
+    pub fn enable_profiler(&mut self) {
+        self.inner.enable_profiler();
+    }
+
+    pub fn reset_profiler(&mut self) {
+        self.inner.reset_profiler();
+    }
+
+    pub fn disable_profiler(&mut self) {
+        self.inner.disable_profiler();
+    }
+
+    #[pyo3(signature = (top_n=64))]
+    pub fn profiler_snapshot(&self, top_n: usize) -> PyResult<String> {
+        self.inner
+            .profiler_snapshot_json(top_n)
+            .ok_or_else(|| PyValueError::new_err("profiler is not enabled"))
+    }
+
     pub fn _debug_ram(&self, env_idx: usize) -> PyResult<Vec<u8>> {
         self.inner
             .env_ram(env_idx)

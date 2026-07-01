@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 import gzip
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -369,6 +370,18 @@ class SuperMarioBrosVecEnv:
         if seed is not None:
             self._core.seed(int(seed))
         return [seed]
+
+    def enable_profiler(self) -> None:
+        self._core.enable_profiler()
+
+    def reset_profiler(self) -> None:
+        self._core.reset_profiler()
+
+    def disable_profiler(self) -> None:
+        self._core.disable_profiler()
+
+    def profiler_snapshot(self, top_n: int = 64) -> dict[str, Any]:
+        return json.loads(self._core.profiler_snapshot(int(top_n)))
 
     def step_async(self, actions: np.ndarray) -> None:
         actions_arr = np.asarray(actions, dtype=np.uint8)

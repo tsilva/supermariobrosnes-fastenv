@@ -74,9 +74,11 @@ Track every trial, including crashes and rejects:
 
 - `.codex/optimization_campaigns/current.json` for resume state
 - `.codex/optimization_campaigns/results.tsv` for human scanning
+- `.codex/optimization_campaigns/ideas.md` for the live idea queue
 
-Keep `results.tsv` uncommitted unless the user asks to commit logs. Accepted
-source commits stay on the campaign branch; rejected commits are reset away.
+Keep `results.tsv` and `ideas.md` uncommitted unless the user asks to commit
+logs. Accepted source commits stay on the campaign branch; rejected commits are
+reset away.
 
 `results.tsv` header:
 
@@ -91,6 +93,78 @@ Manifest fields should include campaign id/mode, branch names, root SHA, epoch,
 allowed benchmark skill/output root, optional run/spend limits, Modal runs used,
 current baseline artifact/mean, accepted commits, discarded commits, current
 experiment, and stop reason.
+
+## Ideas Queue
+
+Create `.codex/optimization_campaigns/ideas.md` when missing and keep it as the
+authoritative optimization backlog. It is a Markdown document, not a table, so
+ideas may include rich rationale, links, checklists, code snippets, profiling
+notes, or benchmark hypotheses.
+
+Use this shape:
+
+```markdown
+# Autoresearch Ideas Queue
+
+## Ready
+
+### IDEA-YYYYMMDD-NNN: Short Title
+
+- Status: ready
+- Perspective: emulator-core | ppu-render | vec-env | python-boundary | tests | cleanup | other
+- Hypothesis: ...
+- Target files: ...
+- Prior evidence: ...
+- Plan: ...
+- Contract risks: ...
+- Required checks: ...
+- Expected benchmark signal: ...
+
+## In Progress
+
+## Done
+```
+
+Statuses are `ready`, `in_progress`, `keep`, `keep_small_gain`, `discard`,
+`crash`, `regression_unfixed_discard`, and `inconclusive`. Keep completed ideas
+in `Done` with the final result row status, benchmark artifact if any, commit if
+kept, and a short reason. Do not delete rejected ideas; they are part of the
+anti-repeat ledger.
+
+Before selecting an experiment:
+
+1. Read `ideas.md`, `results.tsv`, `.codex/optimization_campaigns/current.json`,
+   `docs/PERFORMANCE_PLAN.md`, and the current hot-path source.
+2. Prefer the first high-quality `ready` idea that is not a duplicate of prior
+   rejected or accepted work.
+3. Move or mark that idea as `in_progress`, record the epoch/pre-experiment SHA,
+   and set it as the current experiment in `current.json`.
+4. After the experiment, move the idea to `Done` with the decision, result row,
+   artifact, and rationale before starting another idea.
+
+Keep the queue topped up. If fewer than three non-duplicate `ready` ideas remain,
+or if the remaining ideas all target the same subsystem, launch idea-generation
+subagents before the next experiment. Use the user-provided `N` if present;
+otherwise use `N=3`. Run them in parallel, each with a different perspective,
+for example:
+
+- emulator CPU/interpreter specialization
+- PPU/render/preprocessing path
+- vector environment scheduling and lane semantics
+- Python/Rust boundary and buffer movement
+- tests, instrumentation, simplification, or dead-code removal
+
+Each idea subagent must return Markdown queue entries only. Instruct subagents
+to read the current source, `docs/PERFORMANCE_PLAN.md`, `results.tsv`, and
+`ideas.md`; avoid already-tried ideas; preserve the benchmark contract; include
+contract risks and required checks; and prefer one concrete, implementable
+experiment per entry. Merge their entries into `ideas.md`, deduplicate by
+mechanism and target files, assign stable `IDEA-YYYYMMDD-NNN` IDs, and keep the
+highest-signal ideas near the top of `Ready`.
+
+Do not spend Modal runs merely to generate ideas. Idea generation is analysis
+work; only concrete candidates selected from the queue go through the required
+checks and `/modal-benchmark`.
 
 ## Required Checks
 
@@ -132,7 +206,9 @@ Fresh campaign:
 Each experiment:
 
 1. Record pre-experiment SHA.
-2. Choose one concrete optimization idea.
+2. Choose one concrete optimization idea from
+   `.codex/optimization_campaigns/ideas.md`, refilling the queue first if it is
+   running low.
 3. Edit directly on the campaign branch.
 4. Run local diagnosis/build checks as needed.
 5. Run required checks.

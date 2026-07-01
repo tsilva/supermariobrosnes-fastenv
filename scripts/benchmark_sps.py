@@ -52,6 +52,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--post-start-steps", type=int, default=30)
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--output-json", type=Path, default=None)
+    parser.add_argument(
+        "--profile-output",
+        type=Path,
+        default=None,
+        help="Enable local Rust hot-path profiling and write benchmark+profile JSON.",
+    )
     return parser.parse_args()
 
 
@@ -294,17 +300,26 @@ def main() -> None:
         state_dir=args.state_dir,
         action_set=action_set,
     )
+    if args.profile_output is not None:
+        env.enable_profiler()
     obs = env.reset()
     active_states = env.active_states()
     actions = fill_action(args.num_envs, args.action, action_meanings)
     prepare_game(env, args, action_meanings)
     step_repeated(env, actions, args.warmup, args.include_info)
+    if args.profile_output is not None:
+        env.reset_profiler()
     runs = [run_once(env, actions, args) for _ in range(args.repeats)]
     result = build_result(args, obs, runs, active_states)
+    if args.profile_output is not None:
+        result["profiler"] = env.profiler_snapshot()
 
     if args.output_json is not None:
         args.output_json.parent.mkdir(parents=True, exist_ok=True)
         args.output_json.write_text(json.dumps(result, indent=2) + "\n")
+    if args.profile_output is not None:
+        args.profile_output.parent.mkdir(parents=True, exist_ok=True)
+        args.profile_output.write_text(json.dumps(result, indent=2) + "\n")
     if args.json:
         print(json.dumps(result, indent=2))
     else:

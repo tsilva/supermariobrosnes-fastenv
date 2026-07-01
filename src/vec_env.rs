@@ -3,8 +3,9 @@ use crate::emulator::{
     MarioAction, NesEmulator, StateLoadError, RGB_CHANNELS, VISIBLE_FRAME_HEIGHT,
     VISIBLE_FRAME_WIDTH,
 };
+use crate::profiler::Profiler;
 use rayon::prelude::*;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 const PARALLEL_ENV_THRESHOLD: usize = 4;
 
@@ -207,6 +208,9 @@ pub struct MarioVecEnv {
     rng: XorShift64,
     scratch: Vec<Vec<u8>>,
     synced_lanes: bool,
+    synced_groups: Vec<Vec<usize>>,
+    profiler: Option<Profiler>,
+    profile_shards: Vec<Profiler>,
 }
 
 impl MarioVecEnv {
@@ -248,6 +252,9 @@ impl MarioVecEnv {
             rng: XorShift64::new(seed),
             scratch,
             synced_lanes: true,
+            synced_groups: Vec::new(),
+            profiler: None,
+            profile_shards: Vec::new(),
         };
         env.reset_envs()?;
         Ok(env)
@@ -261,6 +268,7 @@ impl MarioVecEnv {
             }
             self.active_state_indices.fill(-1);
             self.synced_lanes = true;
+            self.synced_groups.clear();
             return Ok(());
         }
 
@@ -278,6 +286,11 @@ impl MarioVecEnv {
             self.refresh_done_baseline(env_idx);
         }
         self.synced_lanes = all_same;
+        if self.synced_lanes {
+            self.synced_groups.clear();
+        } else {
+            self.refresh_synced_groups();
+        }
         Ok(())
     }
 
@@ -364,6 +377,33 @@ impl MarioVecEnv {
         self.rng = XorShift64::new(seed);
     }
 
+    pub fn enable_profiler(&mut self) {
+        self.profiler = Some(Profiler::new());
+        self.profile_shards = (0..self.config.num_envs).map(|_| Profiler::new()).collect();
+    }
+
+    pub fn reset_profiler(&mut self) {
+        if let Some(profiler) = &mut self.profiler {
+            profiler.clear();
+        }
+        for shard in &mut self.profile_shards {
+            shard.clear();
+        }
+    }
+
+    pub fn disable_profiler(&mut self) {
+        self.profiler = None;
+        self.profile_shards.clear();
+    }
+
+    pub fn profiler_snapshot_json(&self, top_n: usize) -> Option<String> {
+        let mut merged = self.profiler.clone()?;
+        for shard in &self.profile_shards {
+            merged.add(shard);
+        }
+        Some(merged.to_json(top_n))
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn info_into(
         &self,
@@ -392,6 +432,31 @@ impl MarioVecEnv {
                 xscroll_hi,
                 xscroll_lo,
             );
+            return;
+        }
+        if !self.synced_groups.is_empty() {
+            for group in &self.synced_groups {
+                let first = group[0];
+                write_info_from_env(
+                    &self.envs[first],
+                    &mut x_pos[first],
+                    &mut coins[first],
+                    &mut level_hi[first],
+                    &mut level_lo[first],
+                    &mut lives[first],
+                    &mut score[first],
+                    &mut scrolling[first],
+                    &mut time[first],
+                    &mut xscroll_hi[first],
+                    &mut xscroll_lo[first],
+                );
+                for &lane in group.iter().skip(1) {
+                    copy_info_lane(
+                        first, lane, x_pos, coins, level_hi, level_lo, lives, score, scrolling,
+                        time, xscroll_hi, xscroll_lo,
+                    );
+                }
+            }
             return;
         }
 
@@ -431,6 +496,14 @@ impl MarioVecEnv {
         xscroll_hi: &mut [u8],
         xscroll_lo: &mut [u8],
     ) {
+        if self.profiler.is_some() {
+            self.step_into_profiled(
+                actions, obs, rewards, terminated, truncated, x_pos, coins, level_hi, level_lo,
+                lives, score, scrolling, time, xscroll_hi, xscroll_lo,
+            );
+            return;
+        }
+
         let config = self.config;
         let obs_stride = config.obs_len_per_env();
         for lane in &mut self.last_done_on_info {
@@ -438,6 +511,9 @@ impl MarioVecEnv {
         }
         if self.synced_lanes && config.num_envs > 1 && !self.done_on_info_rules.is_empty() {
             self.materialize_synced_lanes();
+        }
+        if !self.synced_groups.is_empty() && !self.done_on_info_rules.is_empty() {
+            self.materialize_synced_groups();
         }
         if self.synced_lanes && config.num_envs > 1 {
             let first_action = actions[0];
@@ -484,6 +560,16 @@ impl MarioVecEnv {
             }
 
             self.materialize_synced_lanes();
+        }
+        if !self.synced_groups.is_empty() {
+            if self.synced_group_actions_are_uniform(actions) {
+                self.step_synced_groups(
+                    actions, obs, rewards, terminated, truncated, x_pos, coins, level_hi, level_lo,
+                    lives, score, scrolling, time, xscroll_hi, xscroll_lo,
+                );
+                return;
+            }
+            self.materialize_synced_groups();
         }
 
         if config.num_envs >= PARALLEL_ENV_THRESHOLD {
@@ -590,6 +676,224 @@ impl MarioVecEnv {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn step_into_profiled(
+        &mut self,
+        actions: &[u8],
+        obs: &mut [u8],
+        rewards: &mut [f32],
+        terminated: &mut [bool],
+        truncated: &mut [bool],
+        x_pos: &mut [u16],
+        coins: &mut [u8],
+        level_hi: &mut [i16],
+        level_lo: &mut [i16],
+        lives: &mut [i16],
+        score: &mut [u32],
+        scrolling: &mut [i16],
+        time: &mut [u16],
+        xscroll_hi: &mut [u8],
+        xscroll_lo: &mut [u8],
+    ) {
+        if self.profile_shards.len() != self.config.num_envs {
+            self.profile_shards = (0..self.config.num_envs).map(|_| Profiler::new()).collect();
+        }
+        if let Some(profiler) = &mut self.profiler {
+            profiler.record_batch_step(self.config.num_envs);
+        }
+
+        let config = self.config;
+        let obs_stride = config.obs_len_per_env();
+        for lane in &mut self.last_done_on_info {
+            lane.clear();
+        }
+        if self.synced_lanes && config.num_envs > 1 && !self.done_on_info_rules.is_empty() {
+            self.materialize_synced_lanes_profiled();
+        }
+        if !self.synced_groups.is_empty() && !self.done_on_info_rules.is_empty() {
+            self.materialize_synced_groups_profiled();
+        }
+        if self.synced_lanes && config.num_envs > 1 {
+            let first_action = actions[0];
+            if actions_are_uniform(actions, first_action) {
+                step_one_profiled(
+                    config,
+                    &self.resize_plan,
+                    &mut self.envs[0],
+                    &mut self.scratch[0],
+                    self.done_on_info_baselines[0],
+                    &self.done_on_info_rules,
+                    &mut self.last_done_on_info[0],
+                    first_action,
+                    &mut obs[..obs_stride],
+                    &mut rewards[0],
+                    &mut terminated[0],
+                    &mut truncated[0],
+                    &mut x_pos[0],
+                    &mut coins[0],
+                    &mut level_hi[0],
+                    &mut level_lo[0],
+                    &mut lives[0],
+                    &mut score[0],
+                    &mut scrolling[0],
+                    &mut time[0],
+                    &mut xscroll_hi[0],
+                    &mut xscroll_lo[0],
+                    &mut self.profile_shards[0],
+                );
+                let copy_start = Instant::now();
+                copy_first_obs_to_remaining(obs, obs_stride);
+                rewards.fill(rewards[0]);
+                terminated.fill(terminated[0]);
+                truncated.fill(truncated[0]);
+                fill_info_from_first(
+                    x_pos, coins, level_hi, level_lo, lives, score, scrolling, time, xscroll_hi,
+                    xscroll_lo,
+                );
+                if let Some(profiler) = &mut self.profiler {
+                    profiler.record_first_lane_broadcast(
+                        config.num_envs - 1,
+                        obs_stride * (config.num_envs - 1),
+                    );
+                    profiler.record_grouped_copy(
+                        config.num_envs - 1,
+                        obs_stride * (config.num_envs - 1),
+                        copy_start.elapsed(),
+                    );
+                }
+                if terminated[0] || truncated[0] {
+                    self.autoreset_done_lanes(
+                        obs, terminated, truncated, x_pos, coins, level_hi, level_lo, lives, score,
+                        scrolling, time, xscroll_hi, xscroll_lo,
+                    );
+                }
+                return;
+            }
+
+            self.materialize_synced_lanes_profiled();
+        }
+        if !self.synced_groups.is_empty() {
+            if self.synced_group_actions_are_uniform(actions) {
+                self.step_synced_groups_profiled(
+                    actions, obs, rewards, terminated, truncated, x_pos, coins, level_hi, level_lo,
+                    lives, score, scrolling, time, xscroll_hi, xscroll_lo,
+                );
+                return;
+            }
+            if let Some(profiler) = &mut self.profiler {
+                profiler.record_group_miss();
+            }
+            self.materialize_synced_groups_profiled();
+        }
+
+        if config.num_envs >= PARALLEL_ENV_THRESHOLD {
+            let resize_plan = &self.resize_plan;
+            self.envs
+                .par_iter_mut()
+                .zip(self.scratch.par_iter_mut())
+                .zip(actions.par_iter())
+                .zip(self.done_on_info_baselines.par_iter())
+                .zip(self.last_done_on_info.par_iter_mut())
+                .zip(obs.par_chunks_mut(obs_stride))
+                .zip(rewards.par_iter_mut())
+                .zip(terminated.par_iter_mut())
+                .zip(truncated.par_iter_mut())
+                .zip(x_pos.par_iter_mut())
+                .zip(coins.par_iter_mut())
+                .zip(level_hi.par_iter_mut())
+                .zip(level_lo.par_iter_mut())
+                .zip(lives.par_iter_mut())
+                .zip(score.par_iter_mut())
+                .zip(scrolling.par_iter_mut())
+                .zip(time.par_iter_mut())
+                .zip(xscroll_hi.par_iter_mut())
+                .zip(xscroll_lo.par_iter_mut())
+                .zip(self.profile_shards.par_iter_mut())
+                .for_each(|zipped| {
+                    let (zipped, profiler) = zipped;
+                    let (zipped, xscroll_lo_out) = zipped;
+                    let (zipped, xscroll_hi_out) = zipped;
+                    let (zipped, time_out) = zipped;
+                    let (zipped, scrolling_out) = zipped;
+                    let (zipped, score_out) = zipped;
+                    let (zipped, lives_out) = zipped;
+                    let (zipped, level_lo_out) = zipped;
+                    let (zipped, level_hi_out) = zipped;
+                    let (zipped, coins_out) = zipped;
+                    let (zipped, x_out) = zipped;
+                    let (zipped, truncated_out) = zipped;
+                    let (zipped, terminated_out) = zipped;
+                    let (zipped, reward_out) = zipped;
+                    let (zipped, obs_chunk) = zipped;
+                    let (zipped, fired_done_on_info) = zipped;
+                    let (zipped, done_on_info_baseline) = zipped;
+                    let ((env, scratch), action) = zipped;
+                    step_one_profiled(
+                        config,
+                        resize_plan,
+                        env,
+                        scratch,
+                        *done_on_info_baseline,
+                        &self.done_on_info_rules,
+                        fired_done_on_info,
+                        *action,
+                        obs_chunk,
+                        reward_out,
+                        terminated_out,
+                        truncated_out,
+                        x_out,
+                        coins_out,
+                        level_hi_out,
+                        level_lo_out,
+                        lives_out,
+                        score_out,
+                        scrolling_out,
+                        time_out,
+                        xscroll_hi_out,
+                        xscroll_lo_out,
+                        profiler,
+                    );
+                });
+        } else {
+            for env_idx in 0..config.num_envs {
+                let start = env_idx * obs_stride;
+                let end = start + obs_stride;
+                step_one_profiled(
+                    config,
+                    &self.resize_plan,
+                    &mut self.envs[env_idx],
+                    &mut self.scratch[env_idx],
+                    self.done_on_info_baselines[env_idx],
+                    &self.done_on_info_rules,
+                    &mut self.last_done_on_info[env_idx],
+                    actions[env_idx],
+                    &mut obs[start..end],
+                    &mut rewards[env_idx],
+                    &mut terminated[env_idx],
+                    &mut truncated[env_idx],
+                    &mut x_pos[env_idx],
+                    &mut coins[env_idx],
+                    &mut level_hi[env_idx],
+                    &mut level_lo[env_idx],
+                    &mut lives[env_idx],
+                    &mut score[env_idx],
+                    &mut scrolling[env_idx],
+                    &mut time[env_idx],
+                    &mut xscroll_hi[env_idx],
+                    &mut xscroll_lo[env_idx],
+                    &mut self.profile_shards[env_idx],
+                );
+            }
+        }
+
+        if terminated.iter().any(|done| *done) || truncated.iter().any(|done| *done) {
+            self.autoreset_done_lanes(
+                obs, terminated, truncated, x_pos, coins, level_hi, level_lo, lives, score,
+                scrolling, time, xscroll_hi, xscroll_lo,
+            );
+        }
+    }
+
     fn materialize_synced_lanes(&mut self) {
         let env = self.envs[0].clone();
         for lane in self.envs.iter_mut().skip(1) {
@@ -600,6 +904,401 @@ impl MarioVecEnv {
         let done_on_info_baseline = self.done_on_info_baselines[0];
         self.done_on_info_baselines.fill(done_on_info_baseline);
         self.synced_lanes = false;
+        self.synced_groups.clear();
+    }
+
+    fn materialize_synced_lanes_profiled(&mut self) {
+        let start = Instant::now();
+        let lanes = self.envs.len().saturating_sub(1);
+        self.materialize_synced_lanes();
+        if let Some(profiler) = &mut self.profiler {
+            profiler.record_materialization(lanes, start.elapsed());
+        }
+    }
+
+    fn refresh_synced_groups(&mut self) {
+        self.synced_groups.clear();
+        if self.initial_states.is_empty() || self.weighted_initial_states {
+            return;
+        }
+
+        let mut groups: Vec<Vec<usize>> = Vec::new();
+        'lanes: for lane in 0..self.config.num_envs {
+            let state_index = self.active_state_indices[lane];
+            if state_index < 0 {
+                continue;
+            }
+            let state_index = state_index as usize;
+            for group in &mut groups {
+                let group_state_index = self.active_state_indices[group[0]] as usize;
+                if self.initial_states[state_index].data
+                    == self.initial_states[group_state_index].data
+                {
+                    group.push(lane);
+                    continue 'lanes;
+                }
+            }
+            groups.push(vec![lane]);
+        }
+
+        if groups.iter().any(|group| group.len() > 1) {
+            self.synced_groups = groups;
+        }
+    }
+
+    fn materialize_synced_groups(&mut self) {
+        self.materialize_synced_groups_inner();
+    }
+
+    fn materialize_synced_groups_profiled(&mut self) {
+        let lanes = self
+            .synced_groups
+            .iter()
+            .map(|group| group.len().saturating_sub(1))
+            .sum::<usize>();
+        let start = Instant::now();
+        self.materialize_synced_groups_inner();
+        if let Some(profiler) = &mut self.profiler {
+            profiler.record_materialization(lanes, start.elapsed());
+        }
+    }
+
+    fn materialize_synced_groups_inner(&mut self) {
+        for group in &self.synced_groups {
+            let first = group[0];
+            let env = self.envs[first].clone();
+            let done_on_info_baseline = self.done_on_info_baselines[first];
+            for &lane in group.iter().skip(1) {
+                self.envs[lane] = env.clone();
+                self.done_on_info_baselines[lane] = done_on_info_baseline;
+            }
+        }
+        self.synced_groups.clear();
+    }
+
+    fn synced_group_actions_are_uniform(&self, actions: &[u8]) -> bool {
+        self.synced_groups.iter().all(|group| {
+            let first_action = actions[group[0]];
+            group
+                .iter()
+                .skip(1)
+                .all(|&lane| actions[lane] == first_action)
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn step_synced_groups(
+        &mut self,
+        actions: &[u8],
+        obs: &mut [u8],
+        rewards: &mut [f32],
+        terminated: &mut [bool],
+        truncated: &mut [bool],
+        x_pos: &mut [u16],
+        coins: &mut [u8],
+        level_hi: &mut [i16],
+        level_lo: &mut [i16],
+        lives: &mut [i16],
+        score: &mut [u32],
+        scrolling: &mut [i16],
+        time: &mut [u16],
+        xscroll_hi: &mut [u8],
+        xscroll_lo: &mut [u8],
+    ) {
+        let config = self.config;
+        let obs_stride = config.obs_len_per_env();
+        let mut group_actions = vec![None; config.num_envs];
+        for group in &self.synced_groups {
+            let first = group[0];
+            group_actions[first] = Some(actions[first]);
+        }
+
+        if config.num_envs >= PARALLEL_ENV_THRESHOLD {
+            let resize_plan = &self.resize_plan;
+            self.envs
+                .par_iter_mut()
+                .zip(self.scratch.par_iter_mut())
+                .zip(group_actions.par_iter())
+                .zip(self.done_on_info_baselines.par_iter())
+                .zip(self.last_done_on_info.par_iter_mut())
+                .zip(obs.par_chunks_mut(obs_stride))
+                .zip(rewards.par_iter_mut())
+                .zip(terminated.par_iter_mut())
+                .zip(truncated.par_iter_mut())
+                .zip(x_pos.par_iter_mut())
+                .zip(coins.par_iter_mut())
+                .zip(level_hi.par_iter_mut())
+                .zip(level_lo.par_iter_mut())
+                .zip(lives.par_iter_mut())
+                .zip(score.par_iter_mut())
+                .zip(scrolling.par_iter_mut())
+                .zip(time.par_iter_mut())
+                .zip(xscroll_hi.par_iter_mut())
+                .zip(xscroll_lo.par_iter_mut())
+                .for_each(|zipped| {
+                    let (zipped, xscroll_lo_out) = zipped;
+                    let (zipped, xscroll_hi_out) = zipped;
+                    let (zipped, time_out) = zipped;
+                    let (zipped, scrolling_out) = zipped;
+                    let (zipped, score_out) = zipped;
+                    let (zipped, lives_out) = zipped;
+                    let (zipped, level_lo_out) = zipped;
+                    let (zipped, level_hi_out) = zipped;
+                    let (zipped, coins_out) = zipped;
+                    let (zipped, x_out) = zipped;
+                    let (zipped, truncated_out) = zipped;
+                    let (zipped, terminated_out) = zipped;
+                    let (zipped, reward_out) = zipped;
+                    let (zipped, obs_chunk) = zipped;
+                    let (zipped, fired_done_on_info) = zipped;
+                    let (zipped, done_on_info_baseline) = zipped;
+                    let ((env, scratch), group_action) = zipped;
+                    if let Some(action) = *group_action {
+                        step_one(
+                            config,
+                            resize_plan,
+                            env,
+                            scratch,
+                            *done_on_info_baseline,
+                            &self.done_on_info_rules,
+                            fired_done_on_info,
+                            action,
+                            obs_chunk,
+                            reward_out,
+                            terminated_out,
+                            truncated_out,
+                            x_out,
+                            coins_out,
+                            level_hi_out,
+                            level_lo_out,
+                            lives_out,
+                            score_out,
+                            scrolling_out,
+                            time_out,
+                            xscroll_hi_out,
+                            xscroll_lo_out,
+                        );
+                    }
+                });
+        } else {
+            for group_idx in 0..self.synced_groups.len() {
+                let first = self.synced_groups[group_idx][0];
+                let start = first * obs_stride;
+                let end = start + obs_stride;
+                step_one(
+                    config,
+                    &self.resize_plan,
+                    &mut self.envs[first],
+                    &mut self.scratch[first],
+                    self.done_on_info_baselines[first],
+                    &self.done_on_info_rules,
+                    &mut self.last_done_on_info[first],
+                    actions[first],
+                    &mut obs[start..end],
+                    &mut rewards[first],
+                    &mut terminated[first],
+                    &mut truncated[first],
+                    &mut x_pos[first],
+                    &mut coins[first],
+                    &mut level_hi[first],
+                    &mut level_lo[first],
+                    &mut lives[first],
+                    &mut score[first],
+                    &mut scrolling[first],
+                    &mut time[first],
+                    &mut xscroll_hi[first],
+                    &mut xscroll_lo[first],
+                );
+            }
+        }
+
+        for group_idx in 0..self.synced_groups.len() {
+            let first = self.synced_groups[group_idx][0];
+            for peer_idx in 1..self.synced_groups[group_idx].len() {
+                let lane = self.synced_groups[group_idx][peer_idx];
+                copy_obs_lane(obs, obs_stride, first, lane);
+                rewards[lane] = rewards[first];
+                terminated[lane] = terminated[first];
+                truncated[lane] = truncated[first];
+                copy_info_lane(
+                    first, lane, x_pos, coins, level_hi, level_lo, lives, score, scrolling, time,
+                    xscroll_hi, xscroll_lo,
+                );
+            }
+        }
+
+        if terminated.iter().any(|done| *done) || truncated.iter().any(|done| *done) {
+            self.autoreset_done_lanes(
+                obs, terminated, truncated, x_pos, coins, level_hi, level_lo, lives, score,
+                scrolling, time, xscroll_hi, xscroll_lo,
+            );
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn step_synced_groups_profiled(
+        &mut self,
+        actions: &[u8],
+        obs: &mut [u8],
+        rewards: &mut [f32],
+        terminated: &mut [bool],
+        truncated: &mut [bool],
+        x_pos: &mut [u16],
+        coins: &mut [u8],
+        level_hi: &mut [i16],
+        level_lo: &mut [i16],
+        lives: &mut [i16],
+        score: &mut [u32],
+        scrolling: &mut [i16],
+        time: &mut [u16],
+        xscroll_hi: &mut [u8],
+        xscroll_lo: &mut [u8],
+    ) {
+        let config = self.config;
+        let obs_stride = config.obs_len_per_env();
+        let mut group_actions = vec![None; config.num_envs];
+        let group_lane_count = self.synced_groups.iter().map(Vec::len).sum::<usize>();
+        let leader_count = self.synced_groups.len();
+        for group in &self.synced_groups {
+            let first = group[0];
+            group_actions[first] = Some(actions[first]);
+        }
+        if let Some(profiler) = &mut self.profiler {
+            profiler.record_group_hit(group_lane_count, leader_count);
+        }
+
+        if config.num_envs >= PARALLEL_ENV_THRESHOLD {
+            let resize_plan = &self.resize_plan;
+            self.envs
+                .par_iter_mut()
+                .zip(self.scratch.par_iter_mut())
+                .zip(group_actions.par_iter())
+                .zip(self.done_on_info_baselines.par_iter())
+                .zip(self.last_done_on_info.par_iter_mut())
+                .zip(obs.par_chunks_mut(obs_stride))
+                .zip(rewards.par_iter_mut())
+                .zip(terminated.par_iter_mut())
+                .zip(truncated.par_iter_mut())
+                .zip(x_pos.par_iter_mut())
+                .zip(coins.par_iter_mut())
+                .zip(level_hi.par_iter_mut())
+                .zip(level_lo.par_iter_mut())
+                .zip(lives.par_iter_mut())
+                .zip(score.par_iter_mut())
+                .zip(scrolling.par_iter_mut())
+                .zip(time.par_iter_mut())
+                .zip(xscroll_hi.par_iter_mut())
+                .zip(xscroll_lo.par_iter_mut())
+                .zip(self.profile_shards.par_iter_mut())
+                .for_each(|zipped| {
+                    let (zipped, profiler) = zipped;
+                    let (zipped, xscroll_lo_out) = zipped;
+                    let (zipped, xscroll_hi_out) = zipped;
+                    let (zipped, time_out) = zipped;
+                    let (zipped, scrolling_out) = zipped;
+                    let (zipped, score_out) = zipped;
+                    let (zipped, lives_out) = zipped;
+                    let (zipped, level_lo_out) = zipped;
+                    let (zipped, level_hi_out) = zipped;
+                    let (zipped, coins_out) = zipped;
+                    let (zipped, x_out) = zipped;
+                    let (zipped, truncated_out) = zipped;
+                    let (zipped, terminated_out) = zipped;
+                    let (zipped, reward_out) = zipped;
+                    let (zipped, obs_chunk) = zipped;
+                    let (zipped, fired_done_on_info) = zipped;
+                    let (zipped, done_on_info_baseline) = zipped;
+                    let ((env, scratch), group_action) = zipped;
+                    if let Some(action) = *group_action {
+                        step_one_profiled(
+                            config,
+                            resize_plan,
+                            env,
+                            scratch,
+                            *done_on_info_baseline,
+                            &self.done_on_info_rules,
+                            fired_done_on_info,
+                            action,
+                            obs_chunk,
+                            reward_out,
+                            terminated_out,
+                            truncated_out,
+                            x_out,
+                            coins_out,
+                            level_hi_out,
+                            level_lo_out,
+                            lives_out,
+                            score_out,
+                            scrolling_out,
+                            time_out,
+                            xscroll_hi_out,
+                            xscroll_lo_out,
+                            profiler,
+                        );
+                    }
+                });
+        } else {
+            for group_idx in 0..self.synced_groups.len() {
+                let first = self.synced_groups[group_idx][0];
+                let start = first * obs_stride;
+                let end = start + obs_stride;
+                step_one_profiled(
+                    config,
+                    &self.resize_plan,
+                    &mut self.envs[first],
+                    &mut self.scratch[first],
+                    self.done_on_info_baselines[first],
+                    &self.done_on_info_rules,
+                    &mut self.last_done_on_info[first],
+                    actions[first],
+                    &mut obs[start..end],
+                    &mut rewards[first],
+                    &mut terminated[first],
+                    &mut truncated[first],
+                    &mut x_pos[first],
+                    &mut coins[first],
+                    &mut level_hi[first],
+                    &mut level_lo[first],
+                    &mut lives[first],
+                    &mut score[first],
+                    &mut scrolling[first],
+                    &mut time[first],
+                    &mut xscroll_hi[first],
+                    &mut xscroll_lo[first],
+                    &mut self.profile_shards[first],
+                );
+            }
+        }
+
+        let copy_start = Instant::now();
+        let mut peer_count = 0usize;
+        for group_idx in 0..self.synced_groups.len() {
+            let first = self.synced_groups[group_idx][0];
+            for peer_idx in 1..self.synced_groups[group_idx].len() {
+                let lane = self.synced_groups[group_idx][peer_idx];
+                copy_obs_lane(obs, obs_stride, first, lane);
+                rewards[lane] = rewards[first];
+                terminated[lane] = terminated[first];
+                truncated[lane] = truncated[first];
+                copy_info_lane(
+                    first, lane, x_pos, coins, level_hi, level_lo, lives, score, scrolling, time,
+                    xscroll_hi, xscroll_lo,
+                );
+                peer_count += 1;
+            }
+        }
+        let copy_elapsed = copy_start.elapsed();
+        if let Some(profiler) = &mut self.profiler {
+            profiler.record_grouped_copy(peer_count, peer_count * obs_stride, copy_elapsed);
+            profiler.record_info_copy(peer_count, copy_elapsed);
+        }
+
+        if terminated.iter().any(|done| *done) || truncated.iter().any(|done| *done) {
+            self.autoreset_done_lanes(
+                obs, terminated, truncated, x_pos, coins, level_hi, level_lo, lives, score,
+                scrolling, time, xscroll_hi, xscroll_lo,
+            );
+        }
     }
 
     fn refresh_done_baseline(&mut self, env_idx: usize) {
@@ -671,6 +1370,7 @@ impl MarioVecEnv {
             );
         }
         self.synced_lanes = false;
+        self.synced_groups.clear();
     }
 
     pub fn env_ram(&self, env_idx: usize) -> Option<&[u8; 2048]> {
@@ -745,6 +1445,47 @@ fn copy_first_obs_to_remaining(obs: &mut [u8], obs_stride: usize) {
     }
 }
 
+fn copy_obs_lane(obs: &mut [u8], obs_stride: usize, src_lane: usize, dst_lane: usize) {
+    if src_lane == dst_lane {
+        return;
+    }
+
+    let src_start = src_lane * obs_stride;
+    let dst_start = dst_lane * obs_stride;
+    if src_start < dst_start {
+        let (left, right) = obs.split_at_mut(dst_start);
+        let src = &left[src_start..src_start + obs_stride];
+        right[..obs_stride].copy_from_slice(src);
+    } else {
+        let (left, right) = obs.split_at_mut(src_start);
+        let src = &right[..obs_stride];
+        left[dst_start..dst_start + obs_stride].copy_from_slice(src);
+    }
+}
+
+fn actions_are_uniform(actions: &[u8], first_action: u8) -> bool {
+    match actions.len() {
+        16 => {
+            actions[1] == first_action
+                && actions[2] == first_action
+                && actions[3] == first_action
+                && actions[4] == first_action
+                && actions[5] == first_action
+                && actions[6] == first_action
+                && actions[7] == first_action
+                && actions[8] == first_action
+                && actions[9] == first_action
+                && actions[10] == first_action
+                && actions[11] == first_action
+                && actions[12] == first_action
+                && actions[13] == first_action
+                && actions[14] == first_action
+                && actions[15] == first_action
+        }
+        _ => actions.iter().all(|&action| action == first_action),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn fill_info_from_env(
     env: &NesEmulator,
@@ -794,6 +1535,33 @@ fn fill_info_from_first(
     time.fill(time[0]);
     xscroll_hi.fill(xscroll_hi[0]);
     xscroll_lo.fill(xscroll_lo[0]);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn copy_info_lane(
+    src_lane: usize,
+    dst_lane: usize,
+    x_pos: &mut [u16],
+    coins: &mut [u8],
+    level_hi: &mut [i16],
+    level_lo: &mut [i16],
+    lives: &mut [i16],
+    score: &mut [u32],
+    scrolling: &mut [i16],
+    time: &mut [u16],
+    xscroll_hi: &mut [u8],
+    xscroll_lo: &mut [u8],
+) {
+    x_pos[dst_lane] = x_pos[src_lane];
+    coins[dst_lane] = coins[src_lane];
+    level_hi[dst_lane] = level_hi[src_lane];
+    level_lo[dst_lane] = level_lo[src_lane];
+    lives[dst_lane] = lives[src_lane];
+    score[dst_lane] = score[src_lane];
+    scrolling[dst_lane] = scrolling[src_lane];
+    time[dst_lane] = time[src_lane];
+    xscroll_hi[dst_lane] = xscroll_hi[src_lane];
+    xscroll_lo[dst_lane] = xscroll_lo[src_lane];
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -865,6 +1633,78 @@ fn step_one(
     }
     shift_stack_left(config, obs_chunk);
     write_current_frame_to_last_stack_slot(config, resize_plan, env, scratch, obs_chunk);
+
+    *reward_out = reward;
+    *terminated_out = done;
+    *truncated_out = false;
+    write_info_from_env(
+        env,
+        x_out,
+        coins_out,
+        level_hi_out,
+        level_lo_out,
+        lives_out,
+        score_out,
+        scrolling_out,
+        time_out,
+        xscroll_hi_out,
+        xscroll_lo_out,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn step_one_profiled(
+    config: VecEnvConfig,
+    resize_plan: &AreaResizePlan,
+    env: &mut NesEmulator,
+    scratch: &mut [u8],
+    done_on_info_baseline: InfoSnapshot,
+    done_on_info_rules: &[DoneOnInfoRule],
+    fired_done_on_info: &mut Vec<FiredDoneOnInfoRule>,
+    action_id: u8,
+    obs_chunk: &mut [u8],
+    reward_out: &mut f32,
+    terminated_out: &mut bool,
+    truncated_out: &mut bool,
+    x_out: &mut u16,
+    coins_out: &mut u8,
+    level_hi_out: &mut i16,
+    level_lo_out: &mut i16,
+    lives_out: &mut i16,
+    score_out: &mut u32,
+    scrolling_out: &mut i16,
+    time_out: &mut u16,
+    xscroll_hi_out: &mut u8,
+    xscroll_lo_out: &mut u8,
+    profiler: &mut Profiler,
+) {
+    let action = MarioAction::from_u8(action_id);
+    let mut reward = 0.0;
+    let mut done = false;
+    for _ in 0..config.frame_skip {
+        reward += env.step_frame_profiled(action, profiler);
+        let done_on_info = check_done_on_info(
+            env,
+            done_on_info_baseline,
+            done_on_info_rules,
+            fired_done_on_info,
+        );
+        done = env.is_done() || done_on_info;
+        if done {
+            break;
+        }
+    }
+    let shift_start = Instant::now();
+    shift_stack_left(config, obs_chunk);
+    profiler.record_stack_shift(shift_start.elapsed());
+    write_current_frame_to_last_stack_slot_profiled(
+        config,
+        resize_plan,
+        env,
+        scratch,
+        obs_chunk,
+        profiler,
+    );
 
     *reward_out = reward;
     *terminated_out = done;
@@ -981,6 +1821,27 @@ fn write_current_frame_to_last_stack_slot(
     );
 }
 
+fn write_current_frame_to_last_stack_slot_profiled(
+    config: VecEnvConfig,
+    resize_plan: &AreaResizePlan,
+    env: &NesEmulator,
+    scratch: &mut [u8],
+    obs_chunk: &mut [u8],
+    profiler: &mut Profiler,
+) {
+    let frame_len = frame_len(config);
+    let dst_start = (config.frame_stack - 1) * frame_len;
+    let dst_end = dst_start + frame_len;
+    write_current_frame_profiled(
+        config,
+        resize_plan,
+        env,
+        scratch,
+        &mut obs_chunk[dst_start..dst_end],
+        profiler,
+    );
+}
+
 fn write_current_frame(
     config: VecEnvConfig,
     resize_plan: &AreaResizePlan,
@@ -1000,6 +1861,37 @@ fn write_current_frame(
         resize_frame_area(config, resize_plan, native, dst);
     } else {
         write_native_frame(config, env, dst);
+    }
+}
+
+fn write_current_frame_profiled(
+    config: VecEnvConfig,
+    resize_plan: &AreaResizePlan,
+    env: &NesEmulator,
+    scratch: &mut [u8],
+    dst: &mut [u8],
+    profiler: &mut Profiler,
+) {
+    if config.uses_default_gray_area_resize() {
+        let start = Instant::now();
+        env.write_gray_frame_cropped_area_84x84(dst, scratch);
+        profiler.record_render(start.elapsed());
+        return;
+    }
+
+    if config.needs_resize() {
+        let native_len = native_frame_len(config);
+        let native = &mut scratch[..native_len];
+        let render_start = Instant::now();
+        write_native_frame(config, env, native);
+        profiler.record_render(render_start.elapsed());
+        let resize_start = Instant::now();
+        resize_frame_area(config, resize_plan, native, dst);
+        profiler.record_resize(resize_start.elapsed());
+    } else {
+        let start = Instant::now();
+        write_native_frame(config, env, dst);
+        profiler.record_render(start.elapsed());
     }
 }
 

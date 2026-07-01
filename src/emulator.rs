@@ -1,4 +1,6 @@
 use crate::cartridge::Cartridge;
+use crate::profiler::Profiler;
+use std::time::Instant;
 use thiserror::Error;
 
 pub const NES_WIDTH: usize = 256;
@@ -263,6 +265,13 @@ impl Ppu {
                 _ => {}
             }
         }
+        completed_frame
+    }
+
+    #[inline]
+    fn tick_profiled(&mut self, ppu_cycles: usize, profiler: &mut Profiler) -> bool {
+        let completed_frame = self.tick(ppu_cycles);
+        profiler.record_ppu_tick(ppu_cycles, completed_frame);
         completed_frame
     }
 
@@ -1536,6 +1545,23 @@ impl NesEmulator {
     }
 
     #[inline]
+    pub fn step_frame_profiled(&mut self, action: MarioAction, profiler: &mut Profiler) -> f32 {
+        if self.done {
+            return 0.0;
+        }
+
+        let before = self.xscroll_lo;
+        let start = Instant::now();
+        self.run_frame_profiled(action.buttons(), profiler);
+        profiler.record_frame_step(start.elapsed());
+        self.refresh_smb_state();
+        if self.terminate_on_flag && self.x_pos >= 3160 {
+            self.done = true;
+        }
+        (self.xscroll_lo as i16 - before as i16).max(0) as f32
+    }
+
+    #[inline]
     #[allow(dead_code)]
     pub fn write_rgb_frame(&self, dst: &mut [u8]) {
         self.ppu.write_rgb_frame(dst);
@@ -1692,6 +1718,44 @@ impl NesEmulator {
         }
         if pending_ppu_cycles > 0 {
             self.ppu.tick(pending_ppu_cycles);
+        }
+    }
+
+    fn run_frame_profiled(&mut self, buttons: u8, profiler: &mut Profiler) {
+        self.controller_state = buttons;
+        let mut cpu_cycle_guard = 0usize;
+        let mut pending_ppu_cycles = 0usize;
+        loop {
+            if self.ppu.take_nmi() {
+                self.interrupt(0xfffa, false);
+            }
+            if self.try_fast_forward_idle_jmp(&mut cpu_cycle_guard, &mut pending_ppu_cycles) {
+                if self.ppu.tick_profiled(pending_ppu_cycles, profiler)
+                    || cpu_cycle_guard >= CPU_CYCLES_PER_FRAME_GUARD
+                {
+                    pending_ppu_cycles = 0;
+                    break;
+                }
+                pending_ppu_cycles = 0;
+                continue;
+            }
+            let cycles = self.cpu_step_profiled(profiler) as usize;
+            cpu_cycle_guard += cycles;
+            pending_ppu_cycles += cycles * 3;
+            let must_flush_ppu = pending_ppu_cycles >= self.ppu.cycles_until_next_event()
+                || cpu_cycle_guard >= CPU_CYCLES_PER_FRAME_GUARD;
+            if must_flush_ppu {
+                if self.ppu.tick_profiled(pending_ppu_cycles, profiler)
+                    || cpu_cycle_guard >= CPU_CYCLES_PER_FRAME_GUARD
+                {
+                    pending_ppu_cycles = 0;
+                    break;
+                }
+                pending_ppu_cycles = 0;
+            }
+        }
+        if pending_ppu_cycles > 0 {
+            self.ppu.tick_profiled(pending_ppu_cycles, profiler);
         }
     }
 
@@ -1929,8 +1993,21 @@ impl NesEmulator {
         self.cpu.pc = self.cpu_read_u16(vector);
     }
 
+    #[inline]
     fn cpu_step(&mut self) -> u16 {
         let opcode = self.fetch_u8();
+        self.cpu_step_decoded(opcode)
+    }
+
+    #[inline]
+    fn cpu_step_profiled(&mut self, profiler: &mut Profiler) -> u16 {
+        let pc = self.cpu.pc;
+        let opcode = self.fetch_u8();
+        profiler.record_cpu_step(pc, opcode);
+        self.cpu_step_decoded(opcode)
+    }
+
+    fn cpu_step_decoded(&mut self, opcode: u8) -> u16 {
         let mut cycles = match opcode {
             0x00 => {
                 self.cpu.pc = self.cpu.pc.wrapping_add(1);
